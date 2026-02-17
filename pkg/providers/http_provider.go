@@ -9,6 +9,7 @@ package providers
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,14 +33,19 @@ func NewHTTPProvider(apiKey, apiBase, proxy string) *HTTPProvider {
 		Timeout: 120 * time.Second,
 	}
 
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+	}
+
 	if proxy != "" {
 		proxyURL, err := url.Parse(proxy)
 		if err == nil {
-			client.Transport = &http.Transport{
-				Proxy: http.ProxyURL(proxyURL),
-			}
+			transport.Proxy = http.ProxyURL(proxyURL)
 		}
 	}
+
+	client.Transport = transport
 
 	return &HTTPProvider{
 		apiKey:     apiKey,
@@ -142,14 +148,91 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		Usage *UsageInfo `json:"usage"`
 	}
 
-	// Sanitize body: some providers might return "data: {JSON}" even in non-streaming mode
-	cleanBody := bytes.TrimSpace(body)
-	if bytes.HasPrefix(cleanBody, []byte("data: ")) {
-		cleanBody = bytes.TrimPrefix(cleanBody, []byte("data: "))
-	}
+	// Try standard unmarshal first
+	if err := json.Unmarshal(body, &apiResponse); err == nil && (len(apiResponse.Choices) > 0 || apiResponse.Usage != nil) {
+		// Valid single JSON response
+	} else {
+		// Fallback: Handle multi-line stream/SSE format
+		// Some providers return "data: {JSON}" lines even for non-streaming requests
+		lines := bytes.Split(body, []byte("\n"))
+		contentBuilder := strings.Builder{}
+		
+		for _, line := range lines {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			
+			if bytes.HasPrefix(line, []byte("data: ")) {
+				line = bytes.TrimPrefix(line, []byte("data: "))
+			}
+			
+			if string(line) == "[DONE]" {
+				continue
+			}
 
-	if err := json.Unmarshal(cleanBody, &apiResponse); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w (body: %s)", err, string(cleanBody))
+			// Define a struct for stream chunks (delta)
+			var streamChunk struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+					FinishReason string `json:"finish_reason"`
+				} `json:"choices"`
+				Usage *UsageInfo `json:"usage"`
+			}
+
+			if err := json.Unmarshal(line, &streamChunk); err == nil {
+				if len(streamChunk.Choices) > 0 {
+					contentBuilder.WriteString(streamChunk.Choices[0].Delta.Content)
+					if streamChunk.Choices[0].FinishReason != "" {
+						apiResponse.Choices = append(apiResponse.Choices, struct {
+							Message struct {
+								Content   string `json:"content"`
+								ToolCalls []struct {
+									ID       string `json:"id"`
+									Type     string `json:"type"`
+									Function *struct {
+										Name      string `json:"name"`
+										Arguments string `json:"arguments"`
+									} `json:"function"`
+								} `json:"tool_calls"`
+							} `json:"message"`
+							FinishReason string `json:"finish_reason"`
+						}{
+							FinishReason: streamChunk.Choices[0].FinishReason,
+						})
+					}
+				}
+				if streamChunk.Usage != nil {
+					apiResponse.Usage = streamChunk.Usage
+				}
+			}
+		}
+		
+		// Synthesize a full response from aggregated chunks
+		if contentBuilder.Len() > 0 {
+			if len(apiResponse.Choices) == 0 {
+				apiResponse.Choices = make([]struct {
+					Message struct {
+						Content   string `json:"content"`
+						ToolCalls []struct {
+							ID       string `json:"id"`
+							Type     string `json:"type"`
+							Function *struct {
+								Name      string `json:"name"`
+								Arguments string `json:"arguments"`
+							} `json:"function"`
+						} `json:"tool_calls"`
+					} `json:"message"`
+					FinishReason string `json:"finish_reason"`
+				}, 1)
+			}
+			apiResponse.Choices[0].Message.Content = contentBuilder.String()
+		} else {
+             // If we failed to parse anything meaningful but original unmarshal also failed
+             return nil, fmt.Errorf("failed to parse response as JSON or Stream: %s", string(body))
+        }
 	}
 
 	if len(apiResponse.Choices) == 0 {

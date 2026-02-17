@@ -44,6 +44,7 @@ type AgentLoop struct {
 	running        atomic.Bool
 	summarizing    sync.Map // Tracks which sessions are currently being summarized
 	channelManager *channels.Manager
+	maxHistoryMessages int
 }
 
 // processOptions configures how a message is processed
@@ -136,14 +137,21 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	contextBuilder := NewContextBuilder(workspace)
 	contextBuilder.SetToolsRegistry(toolsRegistry)
 
+	// Default history limit if not set
+	maxHistoryMessages := cfg.Agents.Defaults.MaxHistoryMessages
+	if maxHistoryMessages == 0 {
+		maxHistoryMessages = 100
+	}
+
 	return &AgentLoop{
-		bus:            msgBus,
-		provider:       provider,
-		workspace:      workspace,
-		model:          cfg.Agents.Defaults.Model,
-		contextWindow:  cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
-		maxIterations:  cfg.Agents.Defaults.MaxToolIterations,
-		sessions:       sessionsManager,
+		bus:                msgBus,
+		provider:           provider,
+		workspace:          workspace,
+		model:              cfg.Agents.Defaults.Model,
+		contextWindow:      cfg.Agents.Defaults.MaxTokens, // Restore context window for summarization
+		maxIterations:      cfg.Agents.Defaults.MaxToolIterations,
+		maxHistoryMessages: maxHistoryMessages,
+		sessions:           sessionsManager,
 		state:          stateManager,
 		contextBuilder: contextBuilder,
 		tools:          toolsRegistry,
@@ -598,6 +606,10 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 				map[string]interface{}{
 					"iteration":     iteration,
 					"content_chars": len(finalContent),
+					"prompt_tokens":     response.Usage.PromptTokens,
+					"completion_tokens": response.Usage.CompletionTokens,
+					"total_tokens":      response.Usage.TotalTokens,
+					"free_context":      al.contextWindow - response.Usage.TotalTokens,
 				})
 			break
 		}
@@ -612,6 +624,10 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 				"tools":     toolNames,
 				"count":     len(response.ToolCalls),
 				"iteration": iteration,
+				"prompt_tokens":     response.Usage.PromptTokens,
+				"completion_tokens": response.Usage.CompletionTokens,
+				"total_tokens":      response.Usage.TotalTokens,
+				"free_context":      al.contextWindow - response.Usage.TotalTokens,
 			})
 
 		// Build assistant message with tool calls
@@ -725,7 +741,7 @@ func (al *AgentLoop) maybeSummarize(sessionKey, channel, chatID string) {
 	tokenEstimate := al.estimateTokens(newHistory)
 	threshold := al.contextWindow * 75 / 100
 
-	if len(newHistory) > 20 || tokenEstimate > threshold {
+	if len(newHistory) > al.maxHistoryMessages || tokenEstimate > threshold {
 		if _, loading := al.summarizing.LoadOrStore(sessionKey, true); !loading {
 			go func() {
 				defer al.summarizing.Delete(sessionKey)
