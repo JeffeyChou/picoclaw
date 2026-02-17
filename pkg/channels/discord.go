@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -26,6 +27,8 @@ type DiscordChannel struct {
 	config      config.DiscordConfig
 	transcriber *voice.GroqTranscriber
 	ctx         context.Context
+	typingMap   sync.Map // Stores cancel functions for typing loops: map[channelID]context.CancelFunc
+	lastMessageMap sync.Map // Stores last user message ID for reaction: map[channelID]string
 }
 
 func NewDiscordChannel(cfg config.DiscordConfig, bus *bus.MessageBus) (*DiscordChannel, error) {
@@ -101,12 +104,47 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) erro
 		return fmt.Errorf("channel ID is empty")
 	}
 
+	// Parse and handle [REACT:emoji] command
+	if strings.Contains(msg.Content, "[REACT:") {
+		start := strings.Index(msg.Content, "[REACT:")
+		end := strings.Index(msg.Content[start:], "]")
+		if end != -1 {
+			end += start
+			command := msg.Content[start : end+1]
+			emoji := strings.TrimSuffix(strings.TrimPrefix(command, "[REACT:"), "]")
+
+			// Find the last message to react to
+			if lastMsgID, ok := c.lastMessageMap.Load(channelID); ok {
+				if err := c.session.MessageReactionAdd(channelID, lastMsgID.(string), emoji); err != nil {
+					logger.WarnCF("discord", "Failed to add agent reaction", map[string]any{
+						"emoji": emoji,
+						"error": err.Error(),
+					})
+				}
+			}
+
+			// Remove command from content
+			msg.Content = strings.Replace(msg.Content, command, "", 1)
+			msg.Content = strings.TrimSpace(msg.Content)
+
+			// If content is empty after removing command, return
+			if msg.Content == "" {
+				return nil
+			}
+		}
+	}
+
 	runes := []rune(msg.Content)
 	if len(runes) == 0 {
 		return nil
 	}
 
 	chunks := splitMessage(msg.Content, 1500) // Discord has a limit of 2000 characters per message, leave 500 for natural split e.g. code blocks
+
+	// Stop typing indicator if running
+	if cancel, ok := c.typingMap.LoadAndDelete(channelID); ok {
+		cancel.(context.CancelFunc)()
+	}
 
 	for _, chunk := range chunks {
 		if err := c.sendChunk(ctx, channelID, chunk); err != nil {
@@ -376,6 +414,24 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		"preview":     utils.Truncate(content, 50),
 	})
 
+	// Store message ID for future reactions
+	c.lastMessageMap.Store(m.ChannelID, m.ID)
+
+	// 1. React with emoji
+	// Only react in DMs (GuildID == "") or specific private channel
+	isPrivateChannel := m.GuildID == "" || m.ChannelID == "1465457312066961554"
+	
+	if isPrivateChannel {
+		go func() {
+			if err := s.MessageReactionAdd(m.ChannelID, m.ID, "👀"); err != nil {
+				logger.WarnCF("discord", "Failed to add reaction", map[string]any{"error": err.Error()})
+			}
+		}()
+	}
+
+	// 2. Start persistent typing loop
+	c.startTypingLoop(m.ChannelID)
+
 	metadata := map[string]string{
 		"message_id":   m.ID,
 		"user_id":      senderID,
@@ -393,4 +449,45 @@ func (c *DiscordChannel) downloadAttachment(url, filename string) string {
 	return utils.DownloadFile(url, filename, utils.DownloadOptions{
 		LoggerPrefix: "discord",
 	})
+}
+
+// startTypingLoop starts a persistent typing indicator for the channel.
+// It refreshes every 8 seconds (Discord typing lasts ~10s).
+// It stops when c.Send() is called or after a hard timeout.
+func (c *DiscordChannel) startTypingLoop(channelID string) {
+	// Cancel previous loop if exists
+	if cancel, ok := c.typingMap.Load(channelID); ok {
+		cancel.(context.CancelFunc)()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.typingMap.Store(channelID, cancel)
+
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		defer cancel() // Ensure cleanup
+
+		// Initial typing
+		_ = c.session.ChannelTyping(channelID)
+
+		// Hard timeout to prevent infinite typing
+		timeout := time.After(300 * time.Second)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timeout:
+				c.typingMap.Delete(channelID)
+				return
+			case <-ticker.C:
+				if err := c.session.ChannelTyping(channelID); err != nil {
+					logger.WarnCF("discord", "Failed to send typing", map[string]any{"error": err.Error()})
+					// If we can't send typing (e.g. network issue), maybe we should stop?
+					// For now, keep trying until timeout or done.
+				}
+			}
+		}
+	}()
 }

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/joho/godotenv"
 )
 
 // FlexibleStringSlice is a []string that also accepts JSON numbers,
@@ -180,6 +181,7 @@ type ProvidersConfig struct {
 	ShengSuanYun  ProviderConfig `json:"shengsuanyun"`
 	DeepSeek      ProviderConfig `json:"deepseek"`
 	GitHubCopilot ProviderConfig `json:"github_copilot"`
+	NewAPI        ProviderConfig `json:"newapi"`
 }
 
 type ProviderConfig struct {
@@ -305,6 +307,7 @@ func DefaultConfig() *Config {
 			Nvidia:       ProviderConfig{},
 			Moonshot:     ProviderConfig{},
 			ShengSuanYun: ProviderConfig{},
+			NewAPI:       ProviderConfig{},
 		},
 		Gateway: GatewayConfig{
 			Host: "0.0.0.0",
@@ -336,6 +339,8 @@ func DefaultConfig() *Config {
 
 func LoadConfig(path string) (*Config, error) {
 	cfg := DefaultConfig()
+
+	_ = godotenv.Load()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -405,6 +410,9 @@ func (c *Config) GetAPIKey() string {
 	}
 	if c.Providers.ShengSuanYun.APIKey != "" {
 		return c.Providers.ShengSuanYun.APIKey
+	}
+	if c.Providers.NewAPI.APIKey != "" {
+		return c.Providers.NewAPI.APIKey
 	}
 	return ""
 }

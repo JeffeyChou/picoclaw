@@ -71,6 +71,9 @@ Your workspace is at: %s
 - Memory: %s/memory/MEMORY.md
 - Daily Notes: %s/memory/YYYYMM/YYYYMMDD.md
 - Skills: %s/skills/{skill-name}/SKILL.md
+- Configuration:
+  - Global: %s/[SOUL|IDENTITY|USER|AGENT].md
+  - Channel Specific: %s/memory/[SOUL|IDENTITY|USER|AGENT].[channel].[chat_id].md (Highest Priority)
 
 %s
 
@@ -80,8 +83,10 @@ Your workspace is at: %s
 
 2. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
 
-3. **Memory** - When remembering something, write to %s/memory/MEMORY.md`,
-		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
+3. **Memory** - When remembering something, write to %s/memory/MEMORY.md
+
+4. **Configuration** - If you need to modify your persona for a specific channel, create or edit the corresponding file in the memory directory (e.g., memory/SOUL.discord.123456.md).`,
+		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection, workspacePath)
 }
 
 func (cb *ContextBuilder) buildToolsSection() string {
@@ -106,14 +111,14 @@ func (cb *ContextBuilder) buildToolsSection() string {
 	return sb.String()
 }
 
-func (cb *ContextBuilder) BuildSystemPrompt() string {
+func (cb *ContextBuilder) BuildSystemPrompt(channel, chatID string) string {
 	parts := []string{}
 
 	// Core identity section
 	parts = append(parts, cb.getIdentity())
 
 	// Bootstrap files
-	bootstrapContent := cb.LoadBootstrapFiles()
+	bootstrapContent := cb.LoadBootstrapFiles(channel, chatID)
 	if bootstrapContent != "" {
 		parts = append(parts, bootstrapContent)
 	}
@@ -138,9 +143,9 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-func (cb *ContextBuilder) LoadBootstrapFiles() string {
+func (cb *ContextBuilder) LoadBootstrapFiles(channel, chatID string) string {
 	bootstrapFiles := []string{
-		"AGENTS.md",
+		"AGENT.md",
 		"SOUL.md",
 		"USER.md",
 		"IDENTITY.md",
@@ -148,9 +153,45 @@ func (cb *ContextBuilder) LoadBootstrapFiles() string {
 
 	var result string
 	for _, filename := range bootstrapFiles {
-		filePath := filepath.Join(cb.workspace, filename)
-		if data, err := os.ReadFile(filePath); err == nil {
-			result += fmt.Sprintf("## %s\n\n%s\n\n", filename, string(data))
+		base := strings.TrimSuffix(filename, ".md")
+		ext := ".md"
+
+		// Define search paths in order of priority:
+		// 1. memory/[file].[channel].[chat_id].md
+		// 2. [file].[channel].[chat_id].md
+		// 3. memory/[file].[channel].md
+		// 4. [file].[channel].md
+		// 5. memory/[file].md
+		// 6. [file].md
+
+		var potentialFiles []string
+
+		if channel != "" && chatID != "" {
+			specificName := fmt.Sprintf("%s.%s.%s%s", base, channel, chatID, ext)
+			potentialFiles = append(potentialFiles,
+				filepath.Join(cb.workspace, "memory", specificName),
+				filepath.Join(cb.workspace, specificName),
+			)
+		}
+
+		if channel != "" {
+			channelName := fmt.Sprintf("%s.%s%s", base, channel, ext)
+			potentialFiles = append(potentialFiles,
+				filepath.Join(cb.workspace, "memory", channelName),
+				filepath.Join(cb.workspace, channelName),
+			)
+		}
+
+		potentialFiles = append(potentialFiles,
+			filepath.Join(cb.workspace, "memory", filename),
+			filepath.Join(cb.workspace, filename),
+		)
+
+		for _, path := range potentialFiles {
+			if data, err := os.ReadFile(path); err == nil {
+				result += fmt.Sprintf("## %s\n\n%s\n\n", filename, string(data))
+				break // Found the most specific file, stop searching for others of this type
+			}
 		}
 	}
 
@@ -160,7 +201,7 @@ func (cb *ContextBuilder) LoadBootstrapFiles() string {
 func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary string, currentMessage string, media []string, channel, chatID string) []providers.Message {
 	messages := []providers.Message{}
 
-	systemPrompt := cb.BuildSystemPrompt()
+	systemPrompt := cb.BuildSystemPrompt(channel, chatID)
 
 	// Add Current Session info if provided
 	if channel != "" && chatID != "" {

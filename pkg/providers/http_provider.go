@@ -56,7 +56,7 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	// Strip provider prefix from model name (e.g., moonshot/kimi-k2.5 -> kimi-k2.5, groq/openai/gpt-oss-120b -> openai/gpt-oss-120b, ollama/qwen2.5:14b -> qwen2.5:14b)
 	if idx := strings.Index(model, "/"); idx != -1 {
 		prefix := model[:idx]
-		if prefix == "moonshot" || prefix == "nvidia" || prefix == "groq" || prefix == "ollama" {
+		if prefix == "moonshot" || prefix == "nvidia" || prefix == "groq" || prefix == "ollama" || prefix == "newapi" {
 			model = model[idx+1:]
 		}
 	}
@@ -142,8 +142,14 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		Usage *UsageInfo `json:"usage"`
 	}
 
-	if err := json.Unmarshal(body, &apiResponse); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	// Sanitize body: some providers might return "data: {JSON}" even in non-streaming mode
+	cleanBody := bytes.TrimSpace(body)
+	if bytes.HasPrefix(cleanBody, []byte("data: ")) {
+		cleanBody = bytes.TrimPrefix(cleanBody, []byte("data: "))
+	}
+
+	if err := json.Unmarshal(cleanBody, &apiResponse); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w (body: %s)", err, string(cleanBody))
 	}
 
 	if len(apiResponse.Choices) == 0 {
@@ -332,8 +338,15 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 			}
 			return NewGitHubCopilotProvider(apiBase, cfg.Providers.GitHubCopilot.ConnectMode, model)
 
+		case "newapi":
+			if cfg.Providers.NewAPI.APIKey != "" {
+				apiKey = cfg.Providers.NewAPI.APIKey
+				apiBase = cfg.Providers.NewAPI.APIBase
+				if apiBase == "" {
+					apiBase = "https://newapi.sorai.me/v1"
+				}
+			}
 		}
-
 	}
 
 	// Fallback: detect provider from model name
@@ -418,6 +431,13 @@ func CreateProvider(cfg *config.Config) (LLMProvider, error) {
 				apiBase = "http://localhost:11434/v1"
 			}
 			fmt.Println("Ollama apiBase:", apiBase)
+		case (strings.Contains(lowerModel, "newapi") || strings.HasPrefix(model, "newapi/")) && cfg.Providers.NewAPI.APIKey != "":
+			apiKey = cfg.Providers.NewAPI.APIKey
+			apiBase = cfg.Providers.NewAPI.APIBase
+			proxy = cfg.Providers.NewAPI.Proxy
+			if apiBase == "" {
+				apiBase = "https://newapi.sorai.me/v1"
+			}
 		case cfg.Providers.VLLM.APIBase != "":
 			apiKey = cfg.Providers.VLLM.APIKey
 			apiBase = cfg.Providers.VLLM.APIBase
