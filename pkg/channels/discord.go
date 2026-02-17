@@ -29,6 +29,7 @@ type DiscordChannel struct {
 	ctx         context.Context
 	typingMap   sync.Map // Stores cancel functions for typing loops: map[channelID]context.CancelFunc
 	lastMessageMap sync.Map // Stores last user message ID for reaction: map[channelID]string
+	buffers     sync.Map // Stores channel buffers: map[channelID]*DiscordChannelBuffer
 }
 
 func NewDiscordChannel(cfg config.DiscordConfig, bus *bus.MessageBus) (*DiscordChannel, error) {
@@ -136,6 +137,14 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) erro
 
 	runes := []rune(msg.Content)
 	if len(runes) == 0 {
+		return nil
+	}
+
+	// [NO_REPLY] handling
+	if strings.Contains(msg.Content, "[NO_REPLY]") {
+		logger.InfoCF("discord", "Agent decided not to reply", map[string]any{
+			"channel_id": channelID,
+		})
 		return nil
 	}
 
@@ -430,7 +439,9 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	}
 
 	// 2. Start persistent typing loop
-	c.startTypingLoop(m.ChannelID)
+	if isPrivateChannel {
+		c.startTypingLoop(m.ChannelID)
+	}
 
 	metadata := map[string]string{
 		"message_id":   m.ID,
@@ -442,7 +453,14 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		"is_dm":        fmt.Sprintf("%t", m.GuildID == ""),
 	}
 
-	c.HandleMessage(senderID, m.ChannelID, content, mediaPaths, metadata)
+	if isPrivateChannel {
+		c.HandleMessage(senderID, m.ChannelID, content, mediaPaths, metadata)
+	} else {
+		// Group chat buffering
+		val, _ := c.buffers.LoadOrStore(m.ChannelID, NewDiscordChannelBuffer(m.ChannelID, c))
+		buffer := val.(*DiscordChannelBuffer)
+		buffer.AddMessage(m, content, mediaPaths)
+	}
 }
 
 func (c *DiscordChannel) downloadAttachment(url, filename string) string {
