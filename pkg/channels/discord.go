@@ -39,6 +39,7 @@ func NewDiscordChannel(cfg config.DiscordConfig, bus *bus.MessageBus) (*DiscordC
 	}
 
 	base := NewBaseChannel("discord", cfg, bus, cfg.AllowFrom)
+	base.SetAllowedChannels(cfg.AllowedChannels)
 
 	return &DiscordChannel{
 		BaseChannel: base,
@@ -146,6 +147,30 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) erro
 			"channel_id": channelID,
 		})
 		return nil
+	}
+
+	// Suppress error messages in Group Chats to avoid spam
+	if strings.Contains(msg.Content, "Error processing message") || strings.Contains(msg.Content, "API request failed") {
+		// Check if it's a group chat (has buffer or GuildID check)
+		if _, ok := c.buffers.Load(channelID); ok {
+			logger.InfoCF("discord", "Suppressed error message in group chat", map[string]any{
+				"channel_id": channelID,
+				"error":      utils.Truncate(msg.Content, 50),
+			})
+			return nil
+		}
+	}
+
+	// Suppress "Memory threshold reached" in Group Chats
+	if strings.Contains(msg.Content, "⚠️ Memory threshold reached") {
+		// Check if it's a group chat (has buffer or GuildID check)
+		// We trust c.buffers map as it only stores group channels
+		if _, ok := c.buffers.Load(channelID); ok {
+			logger.InfoCF("discord", "Suppressed memory warning in group chat", map[string]any{
+				"channel_id": channelID,
+			})
+			return nil
+		}
 	}
 
 	chunks := splitMessage(msg.Content, 1500) // Discord has a limit of 2000 characters per message, leave 500 for natural split e.g. code blocks
@@ -329,10 +354,15 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		return
 	}
 
-	if err := c.session.ChannelTyping(m.ChannelID); err != nil {
-		logger.ErrorCF("discord", "Failed to send typing indicator", map[string]any{
-			"error": err.Error(),
+
+
+	// Check whitelist for channel ID
+	if !c.IsChannelAllowed(m.ChannelID) {
+		logger.DebugCF("discord", "Message rejected (channel not in whitelist)", map[string]any{
+			"channel_id": m.ChannelID,
+			"user_id":    m.Author.ID,
 		})
+		return
 	}
 
 	// 检查白名单，避免为被拒绝的用户下载附件和转录

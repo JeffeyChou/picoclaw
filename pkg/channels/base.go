@@ -21,18 +21,36 @@ type BaseChannel struct {
 	config    interface{}
 	bus       *bus.MessageBus
 	running   bool
-	name      string
-	allowList []string
+	name            string
+	allowList       []string
+	allowedChannels []string
 }
 
 func NewBaseChannel(name string, config interface{}, bus *bus.MessageBus, allowList []string) *BaseChannel {
 	return &BaseChannel{
 		config:    config,
 		bus:       bus,
-		name:      name,
-		allowList: allowList,
-		running:   false,
+		name:            name,
+		allowList:       allowList,
+		allowedChannels: []string{},
+		running:         false,
 	}
+}
+
+func (c *BaseChannel) SetAllowedChannels(channels []string) {
+	c.allowedChannels = channels
+}
+
+func (c *BaseChannel) IsChannelAllowed(channelID string) bool {
+	if len(c.allowedChannels) == 0 {
+		return true
+	}
+	for _, allowed := range c.allowedChannels {
+		if allowed == channelID {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *BaseChannel) Name() string {

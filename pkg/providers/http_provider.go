@@ -67,13 +67,24 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		}
 	}
 
+	// Gateway Logic for Grok: Rename tools to avoid "unsupported name" error
+	// Grok is strict about tool names (e.g. read_file is rejected).
+	// We map them to safe names here and map back in the response.
+	// Gateway Logic for Grok: Rename tools to avoid "unsupported name" error
+	isGrok := IsGrokModel(model)
+
+	effectiveTools := tools
+	if isGrok && len(tools) > 0 {
+		effectiveTools = FilterAndRenameGrokTools(tools)
+	}
+
 	requestBody := map[string]interface{}{
 		"model":    model,
 		"messages": messages,
 	}
 
-	if len(tools) > 0 {
-		requestBody["tools"] = tools
+	if len(effectiveTools) > 0 {
+		requestBody["tools"] = effectiveTools
 		requestBody["tool_choice"] = "auto"
 	}
 
@@ -100,7 +111,7 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-
+	
 	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -121,12 +132,25 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-
+	
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("API request failed:\n  Status: %d\n  Body:   %s", resp.StatusCode, string(body))
 	}
 
-	return p.parseResponse(body)
+	response, err := p.parseResponse(body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Gateway Logic: Map back tool names for Grok
+	// Gateway Logic: Map back tool names for Grok
+	if isGrok && response != nil && len(response.ToolCalls) > 0 {
+		for i, tc := range response.ToolCalls {
+			response.ToolCalls[i].Name = GetOriginalToolName(tc.Name)
+		}
+	}
+
+	return response, nil
 }
 
 func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {

@@ -165,8 +165,6 @@ func resolveCodexModel(model string) (string, string) {
 		"llama",
 		"meta-llama",
 		"mistral",
-		"grok",
-		"xai",
 		"zhipu",
 	}
 	for _, prefix := range unsupportedPrefixes {

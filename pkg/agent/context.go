@@ -16,6 +16,7 @@ import (
 
 type ContextBuilder struct {
 	workspace    string
+	model        string
 	skillsLoader *skills.SkillsLoader
 	memory       *MemoryStore
 	tools        *tools.ToolRegistry // Direct reference to tool registry
@@ -29,7 +30,7 @@ func getGlobalConfigDir() string {
 	return filepath.Join(home, ".picoclaw")
 }
 
-func NewContextBuilder(workspace string) *ContextBuilder {
+func NewContextBuilder(workspace, model string) *ContextBuilder {
 	// builtin skills: skills directory in current project
 	// Use the skills/ directory under the current working directory
 	wd, _ := os.Getwd()
@@ -38,6 +39,7 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 
 	return &ContextBuilder{
 		workspace:    workspace,
+		model:        model,
 		skillsLoader: skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
 		memory:       NewMemoryStore(workspace),
 	}
@@ -94,18 +96,28 @@ func (cb *ContextBuilder) buildToolsSection() string {
 		return ""
 	}
 
-	summaries := cb.tools.GetSummaries()
-	if len(summaries) == 0 {
-		return ""
-	}
-
 	var sb strings.Builder
 	sb.WriteString("## Available Tools\n\n")
 	sb.WriteString("**CRITICAL**: You MUST use tools to perform actions. Do NOT pretend to execute commands or schedule tasks.\n\n")
 	sb.WriteString("You have access to the following tools:\n\n")
-	for _, s := range summaries {
-		sb.WriteString(s)
-		sb.WriteString("\n")
+
+	// If Grok model, use renamed tools
+	isGrok := providers.IsGrokModel(cb.model)
+	
+	if isGrok {
+		// Use provider defs to get descriptions, but apply renaming
+		defs := cb.tools.ToProviderDefs()
+		filtered := providers.FilterAndRenameGrokTools(defs)
+		for _, def := range filtered {
+			sb.WriteString(fmt.Sprintf("- `%s` - %s\n", def.Function.Name, def.Function.Description))
+		}
+	} else {
+		// Standard behavior
+		summaries := cb.tools.GetSummaries()
+		for _, s := range summaries {
+			sb.WriteString(s)
+			sb.WriteString("\n")
+		}
 	}
 
 	return sb.String()
@@ -246,7 +258,22 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 		Content: systemPrompt,
 	})
 
-	messages = append(messages, history...)
+	// Sanitize history: Filter out messages with empty content and no tool calls
+	// For messages WITH tool calls but empty content, fill with a placeholder to satisfy strict APIs (Grok/NewAPI)
+	for _, msg := range history {
+		trimmed := strings.TrimSpace(msg.Content)
+		if trimmed == "" {
+			if len(msg.ToolCalls) == 0 {
+				logger.DebugCF("agent", "Filtering empty message from history", map[string]interface{}{"role": msg.Role})
+				continue
+			} else {
+				// Has tool calls but empty content. Some providers (Grok) fail on this.
+				// Inject placeholder.
+				msg.Content = "(calling tool)" // logic: never empty
+			}
+		}
+		messages = append(messages, msg)
+	}
 
 	messages = append(messages, providers.Message{
 		Role:    "user",

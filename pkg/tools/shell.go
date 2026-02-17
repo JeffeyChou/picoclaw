@@ -181,10 +181,36 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 			return ""
 		}
 
-		pathPattern := regexp.MustCompile(`[A-Za-z]:\\[^\\\"']+|/[^\s\"']+`)
-		matches := pathPattern.FindAllString(cmd, -1)
+		// Improved regex to avoid matching URLs (e.g. https://...) as absolute paths
+		// We look for paths starting with / or [A-Z]:\ that are either at the start of the string
+		// or preceded by whitespace/quotes. We also ensure / is not followed by another / (unless it's a network share, but typical URLs have ://)
+		// Actually, the simplest fix for the reported issue "https://..." is ensuring we don't match "://".
+		// But the original regex `/[^\s\"']+` matched `//github...`.
+		// Let's use a stricter regex:
+		// 1. Windows drive: `[A-Za-z]:\\[^\\\"']+`
+		// 2. Unix absolute: `(?:^|[\s"'])(\/[^\s"']+)` -> We need to be careful with capture groups.
+		// simplified: just look for matches, but filter out those preceded by :
+		
+		pathPattern := regexp.MustCompile(`(?:^|[\s"'])([A-Za-z]:\\[^\\\"']+|/[^\s\"']+)`)
+		matches := pathPattern.FindAllStringSubmatch(cmd, -1)
 
-		for _, raw := range matches {
+		for _, match := range matches {
+			// match[1] is the actual path part
+			raw := match[1]
+			
+			// Skip if it looks like a URL schema suffix (e.g. "://...")
+			// The regex `/[^\s"']+` matches `//github.com...`.
+			// If the original string was `https://github...`, the regex `/[^\s"']+` might have matched `//github...` depending on the flavor.
+			// In Go `/[^\s"']+` matches `/` followed by non-space/quote. 
+			// `https://...` -> `//...` matches.
+			// We can simply check if the match starts with `//` and the original cmd has `://` before it? 
+			// Or just: if it starts with `//`, treat it as a protocol relative URL or network share.
+			// If it is a network share `\\server\share` (windows) or `//server/share` (unix), checking relative path might be tricky.
+			// But for `git clone https://...`, we definitely want to ignore it.
+			
+			if strings.HasPrefix(raw, "//") {
+				continue
+			}
 			p, err := filepath.Abs(raw)
 			if err != nil {
 				continue

@@ -134,7 +134,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	stateManager := state.NewManager(workspace)
 
 	// Create context builder and set tools registry
-	contextBuilder := NewContextBuilder(workspace)
+	contextBuilder := NewContextBuilder(workspace, cfg.Agents.Defaults.Model)
 	contextBuilder.SetToolsRegistry(toolsRegistry)
 
 	// Default history limit if not set

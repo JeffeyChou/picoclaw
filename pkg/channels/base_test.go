@@ -50,3 +50,47 @@ func TestBaseChannelIsAllowed(t *testing.T) {
 		})
 	}
 }
+
+func TestBaseChannelIsChannelAllowed(t *testing.T) {
+	tests := []struct {
+		name            string
+		allowedChannels []string
+		channelID       string
+		want            bool
+	}{
+		{
+			name:            "empty allowedChannels allows all",
+			allowedChannels: []string{},
+			channelID:       "any_channel",
+			want:            true,
+		},
+		{
+			name:            "nil allowedChannels allows all",
+			allowedChannels: nil,
+			channelID:       "any_channel",
+			want:            true,
+		},
+		{
+			name:            "channel in allowed list is allowed",
+			allowedChannels: []string{"channel_a", "channel_b"},
+			channelID:       "channel_a",
+			want:            true,
+		},
+		{
+			name:            "channel not in allowed list is denied",
+			allowedChannels: []string{"channel_a", "channel_b"},
+			channelID:       "channel_c",
+			want:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := NewBaseChannel("test", nil, nil, nil)
+			ch.SetAllowedChannels(tt.allowedChannels)
+			if got := ch.IsChannelAllowed(tt.channelID); got != tt.want {
+				t.Fatalf("IsChannelAllowed(%q) = %v, want %v", tt.channelID, got, tt.want)
+			}
+		})
+	}
+}

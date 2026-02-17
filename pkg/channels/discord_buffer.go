@@ -123,15 +123,29 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 
 	// Construct Aggregated Content
 	var sb strings.Builder
-	sb.WriteString("Here is the chat log:\n")
+	sb.WriteString("Here is the recent chat log (Sliding Window). You may see duplicate messages from previous turns. Please focus on the new context and answer if necessary.\n")
 	
 	var aggregatedMedia []string
 	
 	// We send ALL currently buffered messages to the LLM for context
 	for _, msg := range b.messages {
 		timestamp := msg.Timestamp.Format("15:04:05")
+		
+		content := msg.Content
+		if msg.ReferencedMessage != nil {
+			refAuthor := "Unknown"
+			if msg.ReferencedMessage.Author != nil {
+				refAuthor = msg.ReferencedMessage.Author.Username
+			}
+			refContent := msg.ReferencedMessage.Content
+			if len(refContent) > 50 {
+				refContent = refContent[:47] + "..."
+			}
+			content = fmt.Sprintf("[Replying to %s: %q] %s", refAuthor, refContent, msg.Content)
+		}
+
 		// Format: [Time] User: Content
-		sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", timestamp, msg.Author.Username, msg.Content))
+		sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", timestamp, msg.Author.Username, content))
 		
 		if len(msg.Media) > 0 {
 			aggregatedMedia = append(aggregatedMedia, msg.Media...)
@@ -156,10 +170,7 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 		"priority":     fmt.Sprintf("%t", priority),
 	}
 
-	// Start typing if high priority (Mention/Keyword)
-	if priority {
-		b.parent.startTypingLoop(b.channelID)
-	}
+
 
 	// Call Parent
 	b.parent.HandleMessage(lastMsg.Author.ID, b.channelID, finalContent, aggregatedMedia, metadata)

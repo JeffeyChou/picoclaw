@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,6 +251,58 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 			// Debug buffer state
 			t.Logf("Buffer state: Timer=%v Messages=%d", buffer.keywordTimer, len(buffer.messages))
 			t.Fatal("Timer never fired after reset")
+		}
+	})
+	t.Run("Reply Content", func(t *testing.T) {
+		// Reset buffer
+		buffer.messages = make([]BufferedMessage, 0)
+		
+		received := make(chan bus.InboundMessage, 1)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					msg, ok := msgBus.ConsumeInbound(ctx)
+					if ok {
+						received <- msg
+						return
+					}
+				}
+			}
+		}()
+
+		// Message with Reply
+		refMsg := &discordgo.Message{
+			Author: &discordgo.User{Username: "OriginalUser"},
+			Content: "This is the original message",
+		}
+		m := &discordgo.MessageCreate{
+			Message: &discordgo.Message{
+				ID:        "msg_reply",
+				ChannelID: "channel1",
+				GuildID:   "guild1",
+				Author:    &discordgo.User{ID: "user1", Username: "User1"},
+				Content:   "I agree @Bot",
+				Mentions:  []*discordgo.User{{ID: "bot_id"}}, // Trigger immediately
+				ReferencedMessage: refMsg,
+				Timestamp: time.Now(),
+			},
+		}
+		buffer.AddMessage(m, "I agree @Bot", nil)
+
+		select {
+		case msg := <-received:
+			// Check content for reply format
+			expected := `[Replying to OriginalUser: "This is the original message"] I agree @Bot`
+			if !strings.Contains(msg.Content, expected) {
+				t.Errorf("Expected content to contain reply quote. Got:\n%s", msg.Content)
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatal("Timeout waiting for reply trigger")
 		}
 	})
 }
