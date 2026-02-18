@@ -1,0 +1,17 @@
+[Unit]
+Description=PicoClaw Gateway Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Project/picoclaw
+ExecStart=/home/ubuntu/.local/bin/picoclaw gateway
+Restart=always
+RestartSec=5
+Environment=PICOCLAW_HOME=/home/ubuntu/.picoclaw
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

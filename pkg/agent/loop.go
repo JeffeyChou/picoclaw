@@ -680,8 +680,9 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 			toolResult := al.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID, asyncCallback)
 
-			// Send ForUser content to user immediately if not Silent
-			if !toolResult.Silent && toolResult.ForUser != "" && opts.SendResponse {
+			// Send ForUser content to user immediately if not Silent AND not an error
+			// If it IS an error, we let the LLM see it (via ForLLM) and decide how to explain it to the user.
+			if !toolResult.Silent && toolResult.ForUser != "" && !toolResult.IsError && opts.SendResponse {
 				al.bus.PublishOutbound(bus.OutboundMessage{
 					Channel: opts.Channel,
 					ChatID:  opts.ChatID,
@@ -1073,6 +1074,10 @@ func (al *AgentLoop) handleCommand(ctx context.Context, msg bus.InboundMessage) 
 		default:
 			return fmt.Sprintf("Unknown switch target: %s", target), true
 		}
+
+	case "/compact":
+		al.forceCompression(msg.SessionKey)
+		return "Session history compressed.", true
 	}
 
 	return "", false
