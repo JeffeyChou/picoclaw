@@ -505,8 +505,38 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 				content = appendContent(content, fmt.Sprintf("[attachment: %s]", attachment.URL))
 			}
 		} else {
-			mediaPaths = append(mediaPaths, attachment.URL)
-			content = appendContent(content, fmt.Sprintf("[attachment: %s]", attachment.URL))
+			isImage := strings.HasPrefix(strings.ToLower(attachment.ContentType), "image/")
+			isPDF := strings.HasSuffix(strings.ToLower(attachment.Filename), ".pdf")
+
+			if isImage {
+				mediaPaths = append(mediaPaths, attachment.URL)
+				content = appendContent(content, fmt.Sprintf("[image attachment: %s]", attachment.URL))
+			} else if isPDF {
+				localPath := c.downloadAttachment(attachment.URL, attachment.Filename)
+				if localPath != "" {
+					localFiles = append(localFiles, localPath)
+					cmd := exec.Command("python3", "scripts/pdf_parser.py", localPath)
+					output, err := cmd.CombinedOutput()
+					if err == nil {
+						text := string(output)
+						if len(text) > 20000 {
+							text = text[:20000] + "...\n[Text truncated due to length]"
+						}
+						content = appendContent(content, fmt.Sprintf("[PDF attachment (%s)]:\n%s", attachment.Filename, strings.TrimSpace(text)))
+					} else {
+						logger.WarnCF("discord", "Failed to parse pdf attachment", map[string]any{
+							"error": err.Error(),
+							"output": string(output),
+						})
+						content = appendContent(content, fmt.Sprintf("[file attachment (%s): %s]", attachment.Filename, attachment.URL))
+					}
+				} else {
+					content = appendContent(content, fmt.Sprintf("[file attachment (%s): %s]", attachment.Filename, attachment.URL))
+				}
+			} else {
+				// Don't add to mediaPaths so it isn't parsed as a Vision API image_url payload
+				content = appendContent(content, fmt.Sprintf("[file attachment (%s): %s]", attachment.Filename, attachment.URL))
+			}
 		}
 	}
 

@@ -35,6 +35,7 @@ type Message struct {
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Media            []string   `json:"media,omitempty"`
 }
 
 type LLMProvider interface {

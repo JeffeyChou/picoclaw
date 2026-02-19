@@ -57,6 +57,7 @@ type processOptions struct {
 	EnableSummary   bool   // Whether to trigger summarization
 	SendResponse    bool   // Whether to send response via bus
 	NoHistory       bool   // If true, don't load session history (for heartbeat)
+	Media           []string // Media paths/URLs attached to the message
 }
 
 // createToolRegistry creates a tool registry with common tools.
@@ -264,6 +265,7 @@ func (al *AgentLoop) ProcessHeartbeat(ctx context.Context, content, channel, cha
 		EnableSummary:   false,
 		SendResponse:    false,
 		NoHistory:       true, // Don't load session history for heartbeat
+		Media:           nil,
 	})
 }
 
@@ -302,6 +304,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		DefaultResponse: "I've completed processing but have no response to give.",
 		EnableSummary:   true,
 		SendResponse:    false,
+		Media:           msg.Media,
 	})
 }
 
@@ -400,13 +403,17 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 		history,
 		summary,
 		opts.UserMessage,
-		nil,
+		opts.Media, // Pass Media down
 		opts.Channel,
 		opts.ChatID,
 	)
 
 	// 3. Save user message to session
-	al.sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
+	al.sessions.AddFullMessage(opts.SessionKey, providers.Message{
+		Role:    "user",
+		Content: opts.UserMessage,
+		Media:   opts.Media,
+	})
 
 	// 4. Run LLM iteration loop
 	finalContent, finalReasoning, iteration, err := al.runLLMIteration(ctx, messages, opts)

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,9 +84,55 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		effectiveMessages = RenameGrokToolCalls(messages)
 	}
 
+	var payloadMessages []map[string]interface{}
+	for _, m := range effectiveMessages {
+		msgMap := map[string]interface{}{
+			"role": m.Role,
+		}
+
+		if len(m.Media) > 0 {
+			contentArr := []map[string]interface{}{}
+			if m.Content != "" {
+				contentArr = append(contentArr, map[string]interface{}{
+					"type": "text",
+					"text": m.Content,
+				})
+			}
+			for _, mediaURL := range m.Media {
+				if strings.HasPrefix(mediaURL, "http") {
+					encodedURL, err := fetchAndEncodeImage(ctx, p.httpClient, mediaURL)
+					if err == nil {
+						mediaURL = encodedURL
+					}
+				}
+				contentArr = append(contentArr, map[string]interface{}{
+					"type": "image_url",
+					"image_url": map[string]interface{}{
+						"url": mediaURL,
+					},
+				})
+			}
+			msgMap["content"] = contentArr
+		} else {
+			msgMap["content"] = m.Content
+		}
+
+		if len(m.ToolCalls) > 0 {
+			msgMap["tool_calls"] = m.ToolCalls
+		}
+		if m.ToolCallID != "" {
+			msgMap["tool_call_id"] = m.ToolCallID
+		}
+		if m.ReasoningContent != "" {
+			msgMap["reasoning_content"] = m.ReasoningContent
+		}
+		
+		payloadMessages = append(payloadMessages, msgMap)
+	}
+
 	requestBody := map[string]interface{}{
 		"model":    model,
-		"messages": effectiveMessages,
+		"messages": payloadMessages,
 	}
 
 	if len(effectiveTools) > 0 {
@@ -156,6 +203,37 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	}
 
 	return response, nil
+}
+
+func fetchAndEncodeImage(ctx context.Context, client *http.Client, urlStr string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("bad status: %d", resp.StatusCode)
+	}
+	
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	
+	mimeType := resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded), nil
 }
 
 func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {

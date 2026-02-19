@@ -305,10 +305,11 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 	}
 
 	// 4. Add the current user message
-	if currentMessage != "" {
+	if currentMessage != "" || len(media) > 0 {
 		messages = append(messages, providers.Message{
 			Role:    "user",
 			Content: currentMessage,
+			Media:   media,
 		})
 	}
 
