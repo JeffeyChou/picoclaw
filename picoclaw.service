@@ -10,6 +10,7 @@ ExecStart=/home/ubuntu/.local/bin/picoclaw gateway
 Restart=always
 RestartSec=5
 Environment=PICOCLAW_HOME=/home/ubuntu/.picoclaw
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.22.0/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 StandardOutput=journal
 StandardError=journal
 

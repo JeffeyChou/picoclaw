@@ -65,3 +65,35 @@ func GetOriginalToolName(safeName string) string {
 	}
 	return safeName
 }
+// RenameGrokToolCalls renames tool calls in messages to Grok's expected names.
+func RenameGrokToolCalls(messages []Message) []Message {
+	// Logic to map original name -> Grok name
+	mappings := map[string]string{
+		"exec":       "code_execution",
+		"web_search": "web_search",
+		"web_fetch":  "browse_page",
+	}
+
+	newMessages := make([]Message, len(messages))
+	for i, msg := range messages {
+		newMsg := msg
+		if len(msg.ToolCalls) > 0 {
+			newToolCalls := make([]ToolCall, len(msg.ToolCalls))
+			for j, tc := range msg.ToolCalls {
+				newTC := tc
+				if grokName, ok := mappings[tc.Name]; ok {
+					newTC.Name = grokName
+				}
+				if tc.Function != nil {
+					if grokName, ok := mappings[tc.Function.Name]; ok {
+						newTC.Function.Name = grokName
+					}
+				}
+				newToolCalls[j] = newTC
+			}
+			newMsg.ToolCalls = newToolCalls
+		}
+		newMessages[i] = newMsg
+	}
+	return newMessages
+}

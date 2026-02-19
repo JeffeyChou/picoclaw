@@ -78,9 +78,14 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		effectiveTools = FilterAndRenameGrokTools(tools)
 	}
 
+	effectiveMessages := messages
+	if isGrok {
+		effectiveMessages = RenameGrokToolCalls(messages)
+	}
+
 	requestBody := map[string]interface{}{
 		"model":    model,
-		"messages": messages,
+		"messages": effectiveMessages,
 	}
 
 	if len(effectiveTools) > 0 {
@@ -183,6 +188,7 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		// Fallback: Handle multi-line stream/SSE format
 		lines := bytes.Split(body, []byte("\n"))
 		contentBuilder := strings.Builder{}
+		reasoningBuilder := strings.Builder{}
 		
 		for _, line := range lines {
 			line = bytes.TrimSpace(line)
@@ -202,7 +208,9 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 			var streamChunk struct {
 				Choices []struct {
 					Delta struct {
-						Content string `json:"content"`
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
+						Thinking         string `json:"thinking"`
 					} `json:"delta"`
 					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
@@ -212,6 +220,8 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 			if err := json.Unmarshal(line, &streamChunk); err == nil {
 				if len(streamChunk.Choices) > 0 {
 					contentBuilder.WriteString(streamChunk.Choices[0].Delta.Content)
+					reasoningBuilder.WriteString(streamChunk.Choices[0].Delta.ReasoningContent)
+					reasoningBuilder.WriteString(streamChunk.Choices[0].Delta.Thinking)
 					if streamChunk.Choices[0].FinishReason != "" {
 						var c choice
 						c.FinishReason = streamChunk.Choices[0].FinishReason
@@ -225,11 +235,12 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		}
 		
 		// Synthesize a full response from aggregated chunks
-		if contentBuilder.Len() > 0 {
+		if contentBuilder.Len() > 0 || reasoningBuilder.Len() > 0 {
 			if len(fullResp.Choices) == 0 {
 				fullResp.Choices = make([]choice, 1)
 			}
 			fullResp.Choices[0].Message.Content = contentBuilder.String()
+			fullResp.Choices[0].Message.ReasoningContent = reasoningBuilder.String()
 		} else if len(fullResp.Choices) == 0 && fullResp.Usage == nil {
              return nil, fmt.Errorf("failed to parse response as JSON or Stream: %s", string(body))
         }

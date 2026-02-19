@@ -40,7 +40,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/voice"
 )
 
-//go:generate cp -r ../../.picoclaw ./workspace
+//go:generate cp -r ../../workspace ./workspace
 //go:embed workspace
 var embeddedFiles embed.FS
 

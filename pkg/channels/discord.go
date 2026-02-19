@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -66,10 +67,13 @@ func (c *DiscordChannel) Start(ctx context.Context) error {
 
 	c.ctx = ctx
 	c.session.AddHandler(c.handleMessage)
+	c.session.AddHandler(c.handleInteraction)
 
 	if err := c.session.Open(); err != nil {
 		return fmt.Errorf("failed to open discord session: %w", err)
 	}
+
+	c.registerCommands()
 
 	c.setRunning(true)
 
@@ -605,4 +609,94 @@ func (c *DiscordChannel) startTypingLoop(channelID string) {
 			}
 		}
 	}()
+}
+func (c *DiscordChannel) registerCommands() {
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:        "logs",
+			Description: "Get the last 30 lines of picoclaw service logs",
+		},
+	}
+
+	for _, v := range commands {
+		_, err := c.session.ApplicationCommandCreate(c.session.State.User.ID, "", v)
+		if err != nil {
+			logger.ErrorCF("discord", "Failed to create application command", map[string]any{
+				"name":  v.Name,
+				"error": err.Error(),
+			})
+		} else {
+			logger.InfoCF("discord", "Created application command", map[string]any{
+				"name": v.Name,
+			})
+		}
+	}
+}
+
+func (c *DiscordChannel) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+
+	data := i.ApplicationCommandData()
+	if data.Name != "logs" {
+		return
+	}
+
+	// Determine User ID
+	var userID string
+	if i.Member != nil {
+		userID = i.Member.User.ID
+	} else if i.User != nil {
+		userID = i.User.ID
+	}
+
+	// Check Permission
+	if !c.IsAllowed(userID) {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "You are not authorized to use this command.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Defer response as log fetching might take some time
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		logger.ErrorCF("discord", "Failed to defer interaction response", map[string]any{"error": err.Error()})
+		return
+	}
+
+	// Fetch logs
+	cmd := exec.Command("journalctl", "-u", "picoclaw", "-n", "30", "--no-pager")
+	output, err := cmd.CombinedOutput()
+
+	var content string
+	if err != nil {
+		content = fmt.Sprintf("Failed to fetch logs: %v\nOutput: %s", err, string(output))
+	} else {
+		logText := string(output)
+		if len(logText) > 1900 {
+			logText = logText[len(logText)-1900:] // Keep the last 1900 chars
+			logText = "... " + logText
+		}
+		content = "Last 30 lines of picoclaw service log:\n```\n" + logText + "\n```"
+	}
+
+	// Final check on length
+	if len(content) > 2000 {
+		content = content[:1997] + "..."
+	}
+
+	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: &content,
+	})
+	if err != nil {
+		logger.ErrorCF("discord", "Failed to edit interaction response", map[string]any{"error": err.Error()})
+	}
 }
