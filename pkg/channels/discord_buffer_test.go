@@ -35,7 +35,6 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 
 	// Override params for test
 	bufferTriggerCount = 5
-	bufferPruneCount = 3
 	keywordWaitTime = 100 * time.Millisecond
 	
 	buffer := NewDiscordChannelBuffer("channel1", channel)
@@ -72,8 +71,7 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 			if msg.Metadata["priority"] != "true" {
 				t.Errorf("Expected priority true, got %s", msg.Metadata["priority"])
 			}
-			if len(buffer.messages) != 1-bufferPruneCount && len(buffer.messages) != 0 {
-				// 1 message added, triggered immediately -> prune 3 -> 0 left
+			if len(buffer.messages) != 0 {
 				t.Errorf("Expected buffer empty or pruned, got len %d", len(buffer.messages))
 			}
 		case <-time.After(1 * time.Second):
@@ -178,9 +176,9 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 				t.Errorf("Expected priority false for passive, got %s", msg.Metadata["priority"])
 			}
 			// Verify prune
-			// 5 messages -> Trigger -> Prune 3 -> 2 left
-			if len(buffer.messages) != 2 {
-				t.Errorf("Expected 2 messages left, got %d", len(buffer.messages))
+			// 5 messages -> Trigger -> Prune all -> 0 left
+			if len(buffer.messages) != 0 {
+				t.Errorf("Expected 0 messages left, got %d", len(buffer.messages))
 			}
 		case <-time.After(1 * time.Second):
 			t.Fatal("Timeout waiting for passive trigger")

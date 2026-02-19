@@ -12,7 +12,6 @@ import (
 
 var (
 	bufferTriggerCount = 13
-	bufferPruneCount   = 7
 	keywordWaitTime    = 5 * time.Second
 )
 
@@ -100,6 +99,12 @@ func (b *DiscordChannelBuffer) isMentioned(m *discordgo.MessageCreate) bool {
 			return true
 		}
 	}
+	// Check if this is a reply to the bot
+	if m.ReferencedMessage != nil && m.ReferencedMessage.Author != nil {
+		if m.ReferencedMessage.Author.ID == b.parent.session.State.User.ID {
+			return true
+		}
+	}
 	return false
 }
 
@@ -123,7 +128,6 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 
 	// Construct Aggregated Content
 	var sb strings.Builder
-	sb.WriteString("Here is the recent chat log (Sliding Window). You may see duplicate messages from previous turns. Please focus on the new context and answer if necessary.\n")
 	
 	var aggregatedMedia []string
 	
@@ -175,8 +179,8 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 	// Call Parent
 	b.parent.HandleMessage(lastMsg.Author.ID, b.channelID, finalContent, aggregatedMedia, metadata)
 	
-	// Prune
-	b.Prune(bufferPruneCount)
+	// Prune buffer completely to avoid duplicates
+	b.Prune(len(b.messages))
 }
 
 func (b *DiscordChannelBuffer) Prune(count int) {
