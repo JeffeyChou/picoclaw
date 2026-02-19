@@ -31,8 +31,9 @@ type TelegramChannel struct {
 	config       *config.Config
 	chatIDs      map[string]int64
 	transcriber  *voice.GroqTranscriber
-	placeholders sync.Map // chatID -> messageID
-	stopThinking sync.Map // chatID -> thinkingCancel
+	placeholders   sync.Map // chatID -> messageID
+	stopThinking   sync.Map // chatID -> thinkingCancel
+	lastMessageMap sync.Map // chatID -> messageID
 }
 
 type thinkingCancel struct {
@@ -189,12 +190,12 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 	if msg.ReplyToID != "" {
 		targetID := msg.ReplyToID
 		if targetID == "last" {
-			// Logic to find last message if needed, but usually we just reply to the triggering message
-			// which is already done by placeholders if available. 
-			// If not using placeholder, we need the actual ID.
-		}
-		
-		if rid, err := parseChatID(targetID); err == nil {
+			if id, ok := c.lastMessageMap.Load(msg.ChatID); ok {
+				tgMsg.ReplyParameters = &telego.ReplyParameters{
+					MessageID: id.(int),
+				}
+			}
+		} else if rid, err := parseChatID(targetID); err == nil {
 			tgMsg.ReplyParameters = &telego.ReplyParameters{
 				MessageID: int(rid),
 			}
@@ -381,6 +382,9 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		"first_name": user.FirstName,
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
 	}
+
+	// Store message ID for future replies
+	c.lastMessageMap.Store(chatIDStr, message.MessageID)
 
 	c.HandleMessage(fmt.Sprintf("%d", user.ID), fmt.Sprintf("%d", chatID), content, mediaPaths, metadata)
 	return nil

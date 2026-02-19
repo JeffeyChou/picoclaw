@@ -117,12 +117,31 @@ func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) error 
 		return fmt.Errorf("invalid slack chat ID: %s", msg.ChatID)
 	}
 
+	// Handle mentions by prepending to content
+	if len(msg.MentionUserIDs) > 0 {
+		var mentions []string
+		for _, uid := range msg.MentionUserIDs {
+			mentions = append(mentions, fmt.Sprintf("<@%s>", uid))
+		}
+		msg.Content = strings.Join(mentions, " ") + " " + msg.Content
+	}
+
 	opts := []slack.MsgOption{
 		slack.MsgOptionText(msg.Content, false),
 	}
 
-	if threadTS != "" {
-		opts = append(opts, slack.MsgOptionTS(threadTS))
+	// Use ReplyToID if specified, otherwise fallback to threadTS from ChatID
+	targetThreadTS := threadTS
+	if msg.ReplyToID != "" {
+		if msg.ReplyToID != "last" {
+			targetThreadTS = msg.ReplyToID
+		}
+		// If "last", we already have threadTS from the ChatID or should we find the last message in current channel?
+		// Slack's ChatID format in PicoClaw usually includes the thread TS: channelID/threadTS.
+	}
+
+	if targetThreadTS != "" {
+		opts = append(opts, slack.MsgOptionTS(targetThreadTS))
 	}
 
 	_, _, err := c.api.PostMessageContext(ctx, channelID, opts...)

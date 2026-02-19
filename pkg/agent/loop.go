@@ -632,14 +632,23 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		if len(response.ToolCalls) == 0 {
 			finalContent = response.Content
 			finalReasoning = response.ReasoningContent
+			usedPrompt := 0
+			usedCompletion := 0
+			usedTotal := 0
+			if response.Usage != nil {
+				usedPrompt = response.Usage.PromptTokens
+				usedCompletion = response.Usage.CompletionTokens
+				usedTotal = response.Usage.TotalTokens
+			}
+
 			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 				map[string]interface{}{
 					"iteration":     iteration,
 					"content_chars": len(finalContent),
-					"prompt_tokens":     response.Usage.PromptTokens,
-					"completion_tokens": response.Usage.CompletionTokens,
-					"total_tokens":      response.Usage.TotalTokens,
-					"free_context":      al.contextWindow - response.Usage.TotalTokens,
+					"prompt_tokens":     usedPrompt,
+					"completion_tokens": usedCompletion,
+					"total_tokens":      usedTotal,
+					"free_context":      al.contextWindow - usedTotal,
 				})
 			break
 		}
@@ -649,15 +658,24 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		for _, tc := range response.ToolCalls {
 			toolNames = append(toolNames, tc.Name)
 		}
+		usedPrompt := 0
+		usedCompletion := 0
+		usedTotal := 0
+		if response.Usage != nil {
+			usedPrompt = response.Usage.PromptTokens
+			usedCompletion = response.Usage.CompletionTokens
+			usedTotal = response.Usage.TotalTokens
+		}
+
 		logger.InfoCF("agent", "LLM requested tool calls",
 			map[string]interface{}{
 				"tools":     toolNames,
 				"count":     len(response.ToolCalls),
 				"iteration": iteration,
-				"prompt_tokens":     response.Usage.PromptTokens,
-				"completion_tokens": response.Usage.CompletionTokens,
-				"total_tokens":      response.Usage.TotalTokens,
-				"free_context":      al.contextWindow - response.Usage.TotalTokens,
+				"prompt_tokens":     usedPrompt,
+				"completion_tokens": usedCompletion,
+				"total_tokens":      usedTotal,
+				"free_context":      al.contextWindow - usedTotal,
 			})
 
 		// Build assistant message with tool calls
