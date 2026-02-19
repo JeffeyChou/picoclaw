@@ -157,6 +157,17 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		c.stopThinking.Delete(msg.ChatID)
 	}
 
+	// Handle mentions by prepending to content
+	if len(msg.MentionUserIDs) > 0 {
+		var mentions []string
+		for _, uid := range msg.MentionUserIDs {
+			// Telegram mentions can be done via tg://user?id=... links or @username if we have it
+			// For robustness, we use a link if it looks like an ID
+			mentions = append(mentions, fmt.Sprintf("<a href=\"tg://user?id=%s\">User</a>", uid))
+		}
+		msg.Content = strings.Join(mentions, " ") + " " + msg.Content
+	}
+
 	htmlContent := markdownToTelegramHTML(msg.Content)
 
 	// Try to edit placeholder
@@ -173,6 +184,22 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 
 	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
 	tgMsg.ParseMode = telego.ModeHTML
+
+	// Handle reply
+	if msg.ReplyToID != "" {
+		targetID := msg.ReplyToID
+		if targetID == "last" {
+			// Logic to find last message if needed, but usually we just reply to the triggering message
+			// which is already done by placeholders if available. 
+			// If not using placeholder, we need the actual ID.
+		}
+		
+		if rid, err := parseChatID(targetID); err == nil {
+			tgMsg.ReplyParameters = &telego.ReplyParameters{
+				MessageID: int(rid),
+			}
+		}
+	}
 
 	if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
 		logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]interface{}{

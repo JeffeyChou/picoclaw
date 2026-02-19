@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-type SendCallback func(channel, chatID, content string) error
+type SendCallback func(channel, chatID, content, replyToID string, mentionUsers []string) error
 
 type MessageTool struct {
 	sendCallback   SendCallback
@@ -23,7 +23,7 @@ func (t *MessageTool) Name() string {
 }
 
 func (t *MessageTool) Description() string {
-	return "Send a message to user on a chat channel. Use this when you want to communicate something."
+	return "Send a message to user on a chat channel with optional reply and mentions."
 }
 
 func (t *MessageTool) Parameters() map[string]interface{} {
@@ -41,6 +41,15 @@ func (t *MessageTool) Parameters() map[string]interface{} {
 			"chat_id": map[string]interface{}{
 				"type":        "string",
 				"description": "Optional: target chat/user ID",
+			},
+			"reply_to_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional: Message ID to reply to. Use 'last' to reply to the most recent message.",
+			},
+			"mention_users": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]interface{}{"type": "string"},
+				"description": "Optional: List of user IDs to mention.",
 			},
 		},
 		"required": []string{"content"},
@@ -70,6 +79,16 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
+	replyToID, _ := args["reply_to_id"].(string)
+	
+	var mentionUsers []string
+	if mentions, ok := args["mention_users"].([]interface{}); ok {
+		for _, m := range mentions {
+			if s, ok := m.(string); ok {
+				mentionUsers = append(mentionUsers, s)
+			}
+		}
+	}
 
 	if channel == "" {
 		channel = t.defaultChannel
@@ -86,7 +105,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 		return &ToolResult{ForLLM: "Message sending not configured", IsError: true}
 	}
 
-	if err := t.sendCallback(channel, chatID, content); err != nil {
+	if err := t.sendCallback(channel, chatID, content, replyToID, mentionUsers); err != nil {
 		return &ToolResult{
 			ForLLM:  fmt.Sprintf("sending message: %v", err),
 			IsError: true,

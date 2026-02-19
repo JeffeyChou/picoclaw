@@ -13,6 +13,7 @@ type Channel interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Send(ctx context.Context, msg bus.OutboundMessage) error
+	Reaction(ctx context.Context, chatID, messageID, emoji string) error
 	IsRunning() bool
 	IsAllowed(senderID string) bool
 }
@@ -119,6 +120,10 @@ func (c *BaseChannel) HandleMessage(senderID, chatID, content string, media []st
 	}
 
 	c.bus.PublishInbound(msg)
+}
+
+func (c *BaseChannel) Reaction(ctx context.Context, chatID, messageID, emoji string) error {
+	return fmt.Errorf("reaction not supported by channel %s", c.name)
 }
 
 func (c *BaseChannel) setRunning(running bool) {

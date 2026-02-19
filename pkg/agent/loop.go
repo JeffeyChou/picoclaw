@@ -92,15 +92,19 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 	// Message tool - available to both agent and subagent
 	// Subagent uses it to communicate directly with user
 	messageTool := tools.NewMessageTool()
-	messageTool.SetSendCallback(func(channel, chatID, content string) error {
+	messageTool.SetSendCallback(func(channel, chatID, content, replyToID string, mentionUsers []string) error {
 		msgBus.PublishOutbound(bus.OutboundMessage{
-			Channel: channel,
-			ChatID:  chatID,
-			Content: content,
+			Channel:        channel,
+			ChatID:         chatID,
+			Content:        content,
+			ReplyToID:      replyToID,
+			MentionUserIDs: mentionUsers,
 		})
 		return nil
 	})
 	registry.Register(messageTool)
+	
+	registry.Register(tools.NewReactionTool())
 
 	return registry
 }
@@ -211,6 +215,13 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
+	
+	// Inject channel manager into tools that need it
+	if tool, ok := al.tools.Get("reaction"); ok {
+		if rt, ok := tool.(*tools.ReactionTool); ok {
+			rt.SetChannelManager(cm)
+		}
+	}
 }
 
 // RecordLastChannel records the last active channel for this workspace.
@@ -369,6 +380,21 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	if !opts.NoHistory {
 		history = al.sessions.GetHistory(opts.SessionKey)
 		summary = al.sessions.GetSummary(opts.SessionKey)
+		
+		// 2.1 Sanitize history before building messages to fix protocol errors (broken tool chains)
+		sm := al.sessions
+		originalLen := len(history)
+		
+		// Sanitize the session history using the SessionManager method
+		sm.Sanitize(opts.SessionKey)
+		history = sm.GetHistory(opts.SessionKey)
+		
+		if len(history) != originalLen {
+			logger.InfoCF("agent", "Sanitized session history before LLM call", map[string]interface{}{
+				"session": opts.SessionKey,
+				"removed": originalLen - len(history),
+			})
+		}
 	}
 	messages := al.contextBuilder.BuildMessages(
 		history,
@@ -383,7 +409,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	al.sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
 
 	// 4. Run LLM iteration loop
-	finalContent, iteration, err := al.runLLMIteration(ctx, messages, opts)
+	finalContent, finalReasoning, iteration, err := al.runLLMIteration(ctx, messages, opts)
 	if err != nil {
 		return "", err
 	}
@@ -397,7 +423,11 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	}
 
 	// 6. Save final assistant message to session
-	al.sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
+	al.sessions.AddFullMessage(opts.SessionKey, providers.Message{
+		Role:             "assistant",
+		Content:          finalContent,
+		ReasoningContent: finalReasoning,
+	})
 	al.sessions.Save(opts.SessionKey)
 
 	// 7. Optional: summarization
@@ -426,11 +456,10 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	return finalContent, nil
 }
 
-// runLLMIteration executes the LLM call loop with tool handling.
-// Returns the final content, iteration count, and any error.
-func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, error) {
+func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, string, int, error) {
 	iteration := 0
 	var finalContent string
+	var finalReasoning string
 
 	for iteration < al.maxIterations {
 		iteration++
@@ -596,12 +625,13 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 					"iteration": iteration,
 					"error":     err.Error(),
 				})
-			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
+			return "", "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
 		}
 
 		// Check if no tool calls - we're done
 		if len(response.ToolCalls) == 0 {
 			finalContent = response.Content
+			finalReasoning = response.ReasoningContent
 			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 				map[string]interface{}{
 					"iteration":     iteration,
@@ -632,8 +662,9 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 		// Build assistant message with tool calls
 		assistantMsg := providers.Message{
-			Role:    "assistant",
-			Content: response.Content,
+			Role:             "assistant",
+			Content:          response.Content,
+			ReasoningContent: response.ReasoningContent,
 		}
 		for _, tc := range response.ToolCalls {
 			argumentsJSON, _ := json.Marshal(tc.Arguments)
@@ -713,7 +744,11 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		}
 	}
 
-	return finalContent, iteration, nil
+	// If we have final content, we might want to preserve the last reasoning content too
+	// But usually the final content's reasoning is what matters.
+	_ = finalReasoning
+
+	return finalContent, finalReasoning, iteration, nil
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.
@@ -732,6 +767,15 @@ func (al *AgentLoop) updateToolContexts(channel, chatID string) {
 	if tool, ok := al.tools.Get("subagent"); ok {
 		if st, ok := tool.(tools.ContextualTool); ok {
 			st.SetContext(channel, chatID)
+		}
+	}
+	if tool, ok := al.tools.Get("reaction"); ok {
+		if rt, ok := tool.(*tools.ReactionTool); ok {
+			rt.SetContext(channel, chatID)
+			// Ensure ChannelManager is set (it might not be set if tool is created after SetChannelManager called)
+			if al.channelManager != nil {
+				rt.SetChannelManager(al.channelManager)
+			}
 		}
 	}
 }

@@ -11,9 +11,11 @@ type InboundMessage struct {
 }
 
 type OutboundMessage struct {
-	Channel string `json:"channel"`
-	ChatID  string `json:"chat_id"`
-	Content string `json:"content"`
+	Channel        string   `json:"channel"`
+	ChatID         string   `json:"chat_id"`
+	Content        string   `json:"content"`
+	ReplyToID      string   `json:"reply_to_id,omitempty"`
+	MentionUserIDs []string `json:"mention_user_ids,omitempty"`
 }
 
 type MessageHandler func(InboundMessage) error

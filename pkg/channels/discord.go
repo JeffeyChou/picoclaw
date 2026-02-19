@@ -173,6 +173,15 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) erro
 		}
 	}
 
+	// Handle mentions by prepending to content
+	if len(msg.MentionUserIDs) > 0 {
+		var mentions []string
+		for _, uid := range msg.MentionUserIDs {
+			mentions = append(mentions, fmt.Sprintf("<@%s>", uid))
+		}
+		msg.Content = strings.Join(mentions, " ") + " " + msg.Content
+	}
+
 	chunks := splitMessage(msg.Content, 1500) // Discord has a limit of 2000 characters per message, leave 500 for natural split e.g. code blocks
 
 	// Stop typing indicator if running
@@ -180,10 +189,59 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) erro
 		cancel.(context.CancelFunc)()
 	}
 
-	for _, chunk := range chunks {
-		if err := c.sendChunk(ctx, channelID, chunk); err != nil {
+	// Resolve reply reference
+	var replyReference *discordgo.MessageReference
+	if msg.ReplyToID != "" {
+		targetID := msg.ReplyToID
+		if targetID == "last" {
+			if lastID, ok := c.lastMessageMap.Load(channelID); ok {
+				targetID = lastID.(string)
+			} else {
+				targetID = "" // No last message to reply to
+			}
+		}
+		
+		if targetID != "" {
+			replyReference = &discordgo.MessageReference{
+				MessageID: targetID,
+				ChannelID: channelID,
+				GuildID:   "", // Optional usually
+			}
+		}
+	}
+
+	for i, chunk := range chunks {
+		// Only attach reply reference to the first chunk
+		var ref *discordgo.MessageReference
+		if i == 0 {
+			ref = replyReference
+		}
+		
+		if err := c.sendChunk(ctx, channelID, chunk, ref); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (c *DiscordChannel) Reaction(ctx context.Context, chatID, messageID, emoji string) error {
+	if !c.IsRunning() {
+		return fmt.Errorf("discord bot not running")
+	}
+
+	// If messageID is empty or "last", try to find the last message ID for this channel
+	targetMsgID := messageID
+	if targetMsgID == "" || targetMsgID == "last" {
+		if lastID, ok := c.lastMessageMap.Load(chatID); ok {
+			targetMsgID = lastID.(string)
+		} else {
+			return fmt.Errorf("no last message found for channel %s", chatID)
+		}
+	}
+
+	if err := c.session.MessageReactionAdd(chatID, targetMsgID, emoji); err != nil {
+		return fmt.Errorf("failed to add reaction: %w", err)
 	}
 
 	return nil
@@ -315,14 +373,23 @@ func findLastSpace(s string, searchWindow int) int {
 	return -1
 }
 
-func (c *DiscordChannel) sendChunk(ctx context.Context, channelID, content string) error {
+func (c *DiscordChannel) sendChunk(ctx context.Context, channelID, content string, replyTo *discordgo.MessageReference) error {
 	// 使用传入的 ctx 进行超时控制
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := c.session.ChannelMessageSend(channelID, content)
+		var err error
+		if replyTo != nil {
+			_, err = c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+				Content:   content,
+				Reference: replyTo,
+				// Default AllowedMentions usually allows calling out users we mention in content
+			})
+		} else {
+			_, err = c.session.ChannelMessageSend(channelID, content)
+		}
 		done <- err
 	}()
 

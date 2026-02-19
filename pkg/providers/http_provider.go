@@ -154,30 +154,33 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 }
 
 func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
-	var apiResponse struct {
-		Choices []struct {
-			Message struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function *struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
-		} `json:"choices"`
-		Usage *UsageInfo `json:"usage"`
+	type choice struct {
+		Message struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content,omitempty"`
+			Thinking         string `json:"thinking,omitempty"`
+			ToolCalls        []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function *struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	}
+
+	var fullResp struct {
+		Choices []choice   `json:"choices"`
+		Usage   *UsageInfo `json:"usage"`
 	}
 
 	// Try standard unmarshal first
-	if err := json.Unmarshal(body, &apiResponse); err == nil && (len(apiResponse.Choices) > 0 || apiResponse.Usage != nil) {
+	if err := json.Unmarshal(body, &fullResp); err == nil && (len(fullResp.Choices) > 0 || fullResp.Usage != nil) {
 		// Valid single JSON response
 	} else {
 		// Fallback: Handle multi-line stream/SSE format
-		// Some providers return "data: {JSON}" lines even for non-streaming requests
 		lines := bytes.Split(body, []byte("\n"))
 		contentBuilder := strings.Builder{}
 		
@@ -210,66 +213,44 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 				if len(streamChunk.Choices) > 0 {
 					contentBuilder.WriteString(streamChunk.Choices[0].Delta.Content)
 					if streamChunk.Choices[0].FinishReason != "" {
-						apiResponse.Choices = append(apiResponse.Choices, struct {
-							Message struct {
-								Content   string `json:"content"`
-								ToolCalls []struct {
-									ID       string `json:"id"`
-									Type     string `json:"type"`
-									Function *struct {
-										Name      string `json:"name"`
-										Arguments string `json:"arguments"`
-									} `json:"function"`
-								} `json:"tool_calls"`
-							} `json:"message"`
-							FinishReason string `json:"finish_reason"`
-						}{
-							FinishReason: streamChunk.Choices[0].FinishReason,
-						})
+						var c choice
+						c.FinishReason = streamChunk.Choices[0].FinishReason
+						fullResp.Choices = append(fullResp.Choices, c)
 					}
 				}
 				if streamChunk.Usage != nil {
-					apiResponse.Usage = streamChunk.Usage
+					fullResp.Usage = streamChunk.Usage
 				}
 			}
 		}
 		
 		// Synthesize a full response from aggregated chunks
 		if contentBuilder.Len() > 0 {
-			if len(apiResponse.Choices) == 0 {
-				apiResponse.Choices = make([]struct {
-					Message struct {
-						Content   string `json:"content"`
-						ToolCalls []struct {
-							ID       string `json:"id"`
-							Type     string `json:"type"`
-							Function *struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					} `json:"message"`
-					FinishReason string `json:"finish_reason"`
-				}, 1)
+			if len(fullResp.Choices) == 0 {
+				fullResp.Choices = make([]choice, 1)
 			}
-			apiResponse.Choices[0].Message.Content = contentBuilder.String()
-		} else {
-             // If we failed to parse anything meaningful but original unmarshal also failed
+			fullResp.Choices[0].Message.Content = contentBuilder.String()
+		} else if len(fullResp.Choices) == 0 && fullResp.Usage == nil {
              return nil, fmt.Errorf("failed to parse response as JSON or Stream: %s", string(body))
         }
 	}
 
-	if len(apiResponse.Choices) == 0 {
+	if len(fullResp.Choices) == 0 {
 		return &LLMResponse{
 			Content:      "",
 			FinishReason: "stop",
 		}, nil
 	}
 
-	choice := apiResponse.Choices[0]
+	c := fullResp.Choices[0]
 
-	toolCalls := make([]ToolCall, 0, len(choice.Message.ToolCalls))
-	for _, tc := range choice.Message.ToolCalls {
+	reasoning := c.Message.ReasoningContent
+	if reasoning == "" {
+		reasoning = c.Message.Thinking
+	}
+
+	toolCalls := make([]ToolCall, 0, len(c.Message.ToolCalls))
+	for _, tc := range c.Message.ToolCalls {
 		arguments := make(map[string]interface{})
 		name := ""
 
@@ -299,10 +280,11 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 	}
 
 	return &LLMResponse{
-		Content:      choice.Message.Content,
-		ToolCalls:    toolCalls,
-		FinishReason: choice.FinishReason,
-		Usage:        apiResponse.Usage,
+		Content:          c.Message.Content,
+		ReasoningContent: reasoning,
+		ToolCalls:        toolCalls,
+		FinishReason:     c.FinishReason,
+		Usage:            fullResp.Usage,
 	}, nil
 }
 

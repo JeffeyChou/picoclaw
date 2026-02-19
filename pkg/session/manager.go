@@ -259,10 +259,112 @@ func (sm *SessionManager) loadSessions() error {
 			continue
 		}
 
+		// Sanitize history after loading from disk
+		sm.sanitizeMessages(&session)
+
 		sm.sessions[session.Key] = &session
 	}
 
 	return nil
+}
+
+// sanitizeMessages ensures the message history is valid for LLM consumption.
+// It handles:
+// 1. Tool messages at the very beginning (invalid)
+// 2. Assistant messages with tool_calls missing matching tool results (invalid)
+// 3. Tool results without a preceding assistant message with matching tool_calls (invalid)
+func (sm *SessionManager) sanitizeMessages(s *Session) {
+	if s == nil || len(s.Messages) == 0 {
+		return
+	}
+
+	var sanitized []providers.Message
+	
+	// 1. Remove any leading tool or system messages that might confuse the provider
+	// Some providers require history to start with user or assistant (or at least not tool)
+	startIdx := 0
+	for startIdx < len(s.Messages) && s.Messages[startIdx].Role == "tool" {
+		startIdx++
+	}
+	
+	messages := s.Messages[startIdx:]
+	
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		
+		// 2. Validate tool results have a preceding assistant message
+		if msg.Role == "tool" {
+			found := false
+			// Look back for the nearest assistant message with tool calls
+			for k := len(sanitized) - 1; k >= 0; k-- {
+				if sanitized[k].Role == "assistant" && len(sanitized[k].ToolCalls) > 0 {
+					for _, tc := range sanitized[k].ToolCalls {
+						if tc.ID == msg.ToolCallID {
+							found = true
+							break
+						}
+					}
+					break
+				}
+				if sanitized[k].Role == "user" {
+					break // Don't look past user messages
+				}
+			}
+			if !found {
+				// Dangling tool result with no matching call, skip it
+				continue
+			}
+		}
+
+		sanitized = append(sanitized, msg)
+
+		// 3. Check for assistant messages with tool calls that lack results
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			satisfied := make(map[string]bool)
+			for _, tc := range msg.ToolCalls {
+				satisfied[tc.ID] = false
+			}
+
+			// Look ahead in original messages to see if results are already there
+			for j := i + 1; j < len(messages); j++ {
+				nextMsg := messages[j]
+				if nextMsg.Role == "tool" {
+					if _, exists := satisfied[nextMsg.ToolCallID]; exists {
+						satisfied[nextMsg.ToolCallID] = true
+					}
+				} else {
+					break
+				}
+			}
+
+			// If we are at the end or hit a non-tool message, add missing results
+			for _, tc := range msg.ToolCalls {
+				if !satisfied[tc.ID] {
+					sanitized = append(sanitized, providers.Message{
+						Role:       "tool",
+						Content:    "Error: Tool execution was interrupted or result was not recorded.",
+						ToolCallID: tc.ID,
+					})
+				}
+			}
+			
+			// If we found tool messages ahead, skip them in the main loop to avoid duplication
+			// because we'll add them when the loop reaches them, OR we can add them now.
+			// The simplest is to let the loop continue and add them naturally.
+		}
+	}
+	
+	s.Messages = sanitized
+}
+
+// Sanitize cleans up a specific session's history
+func (sm *SessionManager) Sanitize(key string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	
+	if session, ok := sm.sessions[key]; ok {
+		sm.sanitizeMessages(session)
+	}
 }
 
 // SetHistory updates the messages of a session.

@@ -242,156 +242,75 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 		systemPrompt += "\n\n## Summary of Previous Conversation\n\n" + summary
 	}
 
-	//This fix prevents the session memory from LLM failure due to elimination of toolu_IDs required from LLM
-	// --- INICIO DEL FIX ---
-	//Diegox-17
-	for len(history) > 0 && (history[0].Role == "tool") {
+	// 1. Remove orphaned tool messages from the beginning of history
+	for len(history) > 0 && history[0].Role == "tool" {
 		logger.DebugCF("agent", "Removing orphaned tool message from history to prevent LLM error",
 			map[string]interface{}{"role": history[0].Role})
 		history = history[1:]
 	}
-	//Diegox-17
-	// --- FIN DEL FIX ---
 
 	messages = append(messages, providers.Message{
 		Role:    "system",
 		Content: systemPrompt,
 	})
 
-	// Sanitize history: Filter out messages with empty content and no tool calls
-	// For messages WITH tool calls but empty content, fill with a placeholder to satisfy strict APIs (Grok/NewAPI)
-	// Sanitize history: Filter out messages with empty content and no tool calls
-	// For messages WITH tool calls but empty content, fill with a placeholder to satisfy strict APIs (Grok/NewAPI)
-	// Also ensure all tool calls have a corresponding result.
-	for i, msg := range history {
-		trimmed := strings.TrimSpace(msg.Content)
-		if trimmed == "" {
-			if len(msg.ToolCalls) == 0 {
-				logger.DebugCF("agent", "Filtering empty message from history", map[string]interface{}{"role": msg.Role})
-				continue
-			} else {
-				// Has tool calls but empty content. Some providers (Grok) fail on this.
-				// Inject placeholder.
-				msg.Content = "(calling tool)" // logic: never empty
-			}
-		}
-		messages = append(messages, msg)
-
-		// Check for pending tool calls that might be missing results (e.g. crash/restart)
-		if len(msg.ToolCalls) > 0 {
-			// Look ahead to see if the next message is a tool result for these calls
-			// If not, we found an interrupted session. Inject synthetic error results.
-			// We need to check if we have enough subsequent messages to cover all tool calls
-			// Actually, typical flow is: Assistant(calls T1, T2) -> Tool(T1) -> Tool(T2).
-			// If we are at 'msg' (Assistant), check if i+1, i+2... are Tool/User.
-			
-			// Simply: if we are at the end of history, or next message is NOT a tool result,
-			// or next message is User role... we assume they are missing.
-			// (Note: This is a heuristic. Ideally looking up by ID is safer but order is usually sequential)
-			
-			expectedResults := len(msg.ToolCalls)
-			foundResults := 0
-			
-			// Scan ahead
-			for j := i + 1; j < len(history); j++ {
-				if history[j].Role == "tool" {
-					foundResults++
-				} else {
-					// Found non-tool message (likely User or Assistant), stop scanning
-					break
-				}
-			}
-			
-			if foundResults < expectedResults {
-				logger.WarnCF("agent", "Found pending tool calls without results, injecting errors", 
-					map[string]interface{}{
-						"expected": expectedResults,
-						"found": foundResults,
-						"msg_index": i,
-					})
-					
-				// Inject missing results
-				// We need to inject (expected - found) results. 
-				// BUT we don't know WHICH ones are missing easily without ID matching.
-				// However, 'messages' is being built sequentially.
-				// If we just blindly append errors for ALL tool calls of this message, 
-				// we might duplicate if some *were* present in history but we missed them?
-				// Wait, we generate 'messages' from 'history'.
-				// If history has [Assistant(T1, T2), Tool(T1)], we append [Assistant].
-				// Next loop iteration will append Tool(T1).
-				// We need to insert Tool(T2) *after* Tool(T1) is processed?
-				// Or can we just patch 'history' before this loop? 
-				// Patching history in-place or creating a sanitized list first is cleaner.
-			}
-		}
-	}
-	
-	// Better approach: Re-build the list cleanly
-	cleanMessages := make([]providers.Message, 0, len(messages))
-	// Add system prompt first
-	cleanMessages = append(cleanMessages, messages[0]) 
-	
-	// We need to process the *rest* of the messages (which came from history) and the final new message?
-	// The current function structure appends history items one by one to 'messages' (which started with System).
-	// Let's refine the loop above to handle injection directly.
-	
-	// Reset messages to just System Prompt for the rebuild
-	messages = []providers.Message{{Role: "system", Content: systemPrompt}}
-	
+	// 2. Process history messages
 	for i := 0; i < len(history); i++ {
 		msg := history[i]
 		
-		// 1. Filter empty non-tool messages
-		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+		// Filter empty non-tool messages
+		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 && msg.ReasoningContent == "" {
 			continue
 		}
-		// 2. Fix empty tool-call messages
-		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) > 0 {
-			msg.Content = "(calling tool)"
+
+		// Inject placeholder for empty assistant messages with tool calls (required by some APIs like Grok)
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 && strings.TrimSpace(msg.Content) == "" && msg.ReasoningContent == "" {
+			msg.Content = "(thinking...)"
 		}
 		
 		messages = append(messages, msg)
 		
-		// 3. If this is an assistant message with tool calls, verify/inject results
-		if len(msg.ToolCalls) > 0 {
-			// We expect the next len(msg.ToolCalls) messages in 'history' to be tool results
-			// matching these IDs.
-			
+		// 3. If this is an assistant message with tool calls, verify/inject results if missing
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
-				// Check if the confirmation exists in the *remaining* history
 				found := false
-				// Look ahead
-				scanIdx := i + 1
-				for scanIdx < len(history) {
-					nextMsg := history[scanIdx]
-					if nextMsg.Role != "tool" {
-						break // sequence broken
-					}
-					if nextMsg.ToolCallID == tc.ID {
-						found = true
+				// Look ahead in history
+				for j := i + 1; j < len(history); j++ {
+					nextMsg := history[j]
+					if nextMsg.Role == "tool" {
+						if nextMsg.ToolCallID == tc.ID {
+							found = true
+							break
+						}
+					} else if nextMsg.Role != "tool" {
+						// Found a non-tool message before a result: interruption detected
 						break
 					}
-					scanIdx++
 				}
 				
 				if !found {
-					// Inject synthetic error
-					synthetic := providers.Message{
-						Role: "tool",
+					// Inject synthetic result to keep context valid for strict APIs
+					messages = append(messages, providers.Message{
+						Role:       "tool",
 						ToolCallID: tc.ID,
-						Content: "Error: Tool execution interrupted (system restart or crash).",
-					}
-					messages = append(messages, synthetic)
-					logger.InfoCF("agent", "Injected synthetic tool error", map[string]interface{}{"id": tc.ID})
+						Content:    "Error: Tool execution was interrupted or result was not recorded.",
+					})
+					logger.WarnCF("agent", "Injected synthetic tool result in context", map[string]interface{}{
+						"tool_call_id": tc.ID,
+						"index":        i,
+					})
 				}
 			}
 		}
 	}
 
-	messages = append(messages, providers.Message{
-		Role:    "user",
-		Content: currentMessage,
-	})
+	// 4. Add the current user message
+	if currentMessage != "" {
+		messages = append(messages, providers.Message{
+			Role:    "user",
+			Content: currentMessage,
+		})
+	}
 
 	return messages
 }
