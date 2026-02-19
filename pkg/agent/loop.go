@@ -841,11 +841,24 @@ func (al *AgentLoop) forceCompression(sessionKey string) {
 	// Helper to find the mid-point of the conversation
 	mid := len(conversation) / 2
 
-	// New history structure:
-	// 1. System Prompt
-	// 2. [Summary of dropped part] - synthesized
-	// 3. Second half of conversation
-	// 4. Last message
+	// Find a safe boundary to avoid splitting assistant tool calls from tool results.
+	// We want the kept conversation to ideally start with a "user" message.
+	safeMid := mid
+	for safeMid < len(conversation) && conversation[safeMid].Role != "user" {
+		safeMid++
+	}
+	
+	// If no user message found after mid, try looking before mid
+	if safeMid == len(conversation) {
+		safeMid = mid
+		for safeMid > 0 && conversation[safeMid].Role != "user" {
+			safeMid--
+		}
+	}
+	
+	if conversation[safeMid].Role == "user" {
+		mid = safeMid
+	}
 
 	// Simplified approach for emergency: Drop first half of conversation
 	// and rely on existing summary if present, or create a placeholder.

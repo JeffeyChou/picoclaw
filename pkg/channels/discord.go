@@ -613,22 +613,71 @@ func (c *DiscordChannel) startTypingLoop(channelID string) {
 func (c *DiscordChannel) registerCommands() {
 	commands := []*discordgo.ApplicationCommand{
 		{
-			Name:        "logs",
-			Description: "Get the last 30 lines of picoclaw service logs",
+			Name:        "status",
+			Description: "Get the service status and the last 30 lines of logs",
+		},
+		{
+			Name:        "restart",
+			Description: "Restart the picoclaw service",
 		},
 	}
 
+	validCommands := make(map[string]bool)
 	for _, v := range commands {
+		validCommands[v.Name] = true
+	}
+
+	// 1. Clean up old Global commands
+	if existingGlobal, err := c.session.ApplicationCommands(c.session.State.User.ID, ""); err == nil {
+		for _, cmd := range existingGlobal {
+			if !validCommands[cmd.Name] {
+				c.session.ApplicationCommandDelete(c.session.State.User.ID, "", cmd.ID)
+				logger.InfoCF("discord", "Deleted old global command", map[string]any{"name": cmd.Name})
+			}
+		}
+	}
+
+	// 2. Clean up old Guild commands
+	for _, guild := range c.session.State.Guilds {
+		if existingGuild, err := c.session.ApplicationCommands(c.session.State.User.ID, guild.ID); err == nil {
+			for _, cmd := range existingGuild {
+				if !validCommands[cmd.Name] {
+					c.session.ApplicationCommandDelete(c.session.State.User.ID, guild.ID, cmd.ID)
+					logger.InfoCF("discord", "Deleted old guild command", map[string]any{"name": cmd.Name, "guild_id": guild.ID})
+				}
+			}
+		}
+	}
+
+	for _, v := range commands {
+		// 1. Register Global (can take up to 1 hour)
 		_, err := c.session.ApplicationCommandCreate(c.session.State.User.ID, "", v)
 		if err != nil {
-			logger.ErrorCF("discord", "Failed to create application command", map[string]any{
+			logger.ErrorCF("discord", "Failed to create global application command", map[string]any{
 				"name":  v.Name,
 				"error": err.Error(),
 			})
 		} else {
-			logger.InfoCF("discord", "Created application command", map[string]any{
+			logger.InfoCF("discord", "Created global application command", map[string]any{
 				"name": v.Name,
 			})
+		}
+
+		// 2. Register for all Guilds (instant update)
+		for _, guild := range c.session.State.Guilds {
+			_, err := c.session.ApplicationCommandCreate(c.session.State.User.ID, guild.ID, v)
+			if err != nil {
+				logger.ErrorCF("discord", "Failed to create guild application command", map[string]any{
+					"name":     v.Name,
+					"guild_id": guild.ID,
+					"error":    err.Error(),
+				})
+			} else {
+				logger.InfoCF("discord", "Created guild application command", map[string]any{
+					"name":     v.Name,
+					"guild_id": guild.ID,
+				})
+			}
 		}
 	}
 }
@@ -639,7 +688,7 @@ func (c *DiscordChannel) handleInteraction(s *discordgo.Session, i *discordgo.In
 	}
 
 	data := i.ApplicationCommandData()
-	if data.Name != "logs" {
+	if data.Name != "status" && data.Name != "restart" {
 		return
 	}
 
@@ -663,6 +712,29 @@ func (c *DiscordChannel) handleInteraction(s *discordgo.Session, i *discordgo.In
 		return
 	}
 
+	// Permission check handled above
+	_ = userID // Keep used indicator
+
+	if data.Name == "restart" {
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "🔄 Restarting picoclaw service... Please wait.",
+			},
+		})
+		
+		if err != nil {
+			logger.ErrorCF("discord", "Failed to respond to restart interaction", map[string]any{"error": err.Error()})
+		}
+
+		go func() {
+			time.Sleep(3 * time.Second)
+			logger.InfoC("discord", "Executing service restart via slash command")
+			exec.Command("sudo", "systemctl", "restart", "picoclaw").Run()
+		}()
+		return
+	}
+
 	// Defer response as log fetching might take some time
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -672,20 +744,30 @@ func (c *DiscordChannel) handleInteraction(s *discordgo.Session, i *discordgo.In
 		return
 	}
 
-	// Fetch logs
+	// Fetch status and logs
+	statusCmd := exec.Command("systemctl", "is-active", "picoclaw")
+	statusOutput, _ := statusCmd.CombinedOutput()
+	serviceStatus := strings.TrimSpace(string(statusOutput))
+
 	cmd := exec.Command("journalctl", "-u", "picoclaw", "-n", "30", "--no-pager")
 	output, err := cmd.CombinedOutput()
 
 	var content string
 	if err != nil {
-		content = fmt.Sprintf("Failed to fetch logs: %v\nOutput: %s", err, string(output))
+		content = fmt.Sprintf("Failed to fetch logs: %v\nStatus: %s\nOutput: %s", err, serviceStatus, string(output))
 	} else {
 		logText := string(output)
-		if len(logText) > 1900 {
-			logText = logText[len(logText)-1900:] // Keep the last 1900 chars
+		if len(logText) > 1850 {
+			logText = logText[len(logText)-1850:] // Keep the last 1850 chars
 			logText = "... " + logText
 		}
-		content = "Last 30 lines of picoclaw service log:\n```\n" + logText + "\n```"
+		
+		emoji := "🟢"
+		if serviceStatus != "active" {
+			emoji = "🔴"
+		}
+		
+		content = fmt.Sprintf("Service Status: %s **%s**\n\nLast 30 lines of logs:\n```\n%s\n```", emoji, serviceStatus, logText)
 	}
 
 	// Final check on length
