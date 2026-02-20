@@ -268,6 +268,9 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 			msg.Content = "(thinking...)"
 		}
 
+		// Strip historical reasoning content to save token context
+		msg.ReasoningContent = ""
+
 		messages = append(messages, msg)
 
 		// 3. If this is an assistant message with tool calls, verify/inject results if missing
