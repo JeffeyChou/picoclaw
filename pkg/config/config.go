@@ -109,6 +109,8 @@ type DiscordConfig struct {
 	Enabled         bool                `json:"enabled" env:"PICOCLAW_CHANNELS_DISCORD_ENABLED"`
 	Token           string              `json:"token" env:"PICOCLAW_CHANNELS_DISCORD_TOKEN"`
 	AllowedChannels FlexibleStringSlice `json:"allowed_channels" env:"PICOCLAW_CHANNELS_DISCORD_ALLOWED_CHANNELS"`
+	PrivateChannels FlexibleStringSlice `json:"private_channels" env:"PICOCLAW_CHANNELS_DISCORD_PRIVATE_CHANNELS"`
+	WakeupKeywords  FlexibleStringSlice `json:"wakeup_keywords" env:"PICOCLAW_CHANNELS_DISCORD_WAKEUP_KEYWORDS"`
 	AllowFrom       FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_DISCORD_ALLOW_FROM"`
 }
 
@@ -252,9 +254,12 @@ func DefaultConfig() *Config {
 				AllowFrom:         FlexibleStringSlice{},
 			},
 			Discord: DiscordConfig{
-				Enabled:   false,
-				Token:     "",
-				AllowFrom: FlexibleStringSlice{},
+				Enabled:         false,
+				Token:           "",
+				AllowedChannels: FlexibleStringSlice{},
+				PrivateChannels: FlexibleStringSlice{},
+				WakeupKeywords:  FlexibleStringSlice{},
+				AllowFrom:       FlexibleStringSlice{},
 			},
 			MaixCam: MaixCamConfig{
 				Enabled:   false,

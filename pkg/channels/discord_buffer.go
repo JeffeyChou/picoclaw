@@ -110,7 +110,10 @@ func (b *DiscordChannelBuffer) isMentioned(m *discordgo.MessageCreate) bool {
 
 func (b *DiscordChannelBuffer) hasKeyword(content string) bool {
 	lower := strings.ToLower(content)
-	keywords := []string{"pipi", "派派"}
+	keywords := b.parent.config.WakeupKeywords
+	if len(keywords) == 0 {
+		keywords = []string{"pipi", "派派"}
+	}
 	for _, k := range keywords {
 		if strings.Contains(lower, k) {
 			return true

@@ -22,7 +22,14 @@
       "enabled": false,
       "token": "YOUR_DISCORD_BOT_TOKEN",
       "allowed_channels": [],
-      "allow_from": []
+      "allow_from": [],
+      "private_channels": [
+        "1465457312066961554"
+      ],
+      "wakeup_keywords": [
+        "pipi",
+        "派派"
+      ]
     },
     "maixcam": {
       "enabled": false,

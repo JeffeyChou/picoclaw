@@ -555,9 +555,16 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	// Store message ID for future reactions
 	c.lastMessageMap.Store(m.ChannelID, m.ID)
 
-	// 1. React with emoji
 	// Only react in DMs (GuildID == "") or specific private channel
-	isPrivateChannel := m.GuildID == "" || m.ChannelID == "1465457312066961554"
+	isPrivateChannel := m.GuildID == ""
+	if !isPrivateChannel {
+		for _, pc := range c.config.PrivateChannels {
+			if m.ChannelID == pc {
+				isPrivateChannel = true
+				break
+			}
+		}
+	}
 
 	if isPrivateChannel {
 		go func() {
