@@ -16,13 +16,13 @@ func FilterAndRenameGrokTools(tools []ToolDefinition) []ToolDefinition {
 		"exec":       "code_execution",
 		"web_search": "web_search",
 		"web_fetch":  "browse_page",
-		"read_file":   "code_execution", // Fallback to code execution for file ops
-		"write_file":  "code_execution",
-		"edit_file":   "code_execution",
+		"read_file":  "code_execution", // Fallback to code execution for file ops
+		"write_file": "code_execution",
+		"edit_file":  "code_execution",
 	}
 
 	filtered := make([]ToolDefinition, 0)
-	
+
 	for _, t := range tools {
 		grokName, ok := validMappings[t.Function.Name]
 		if !ok {
@@ -40,12 +40,12 @@ func FilterAndRenameGrokTools(tools []ToolDefinition) []ToolDefinition {
 			// Actually, mapping file ops to code_execution is complex without changing parameters.
 			// Let's simplified: Only map 'exec' -> 'code_execution' for now.
 			// File tools will be hidden.
-			continue 
+			continue
 		}
 
 		filtered = append(filtered, newTool)
 	}
-	
+
 	return filtered
 }
 
@@ -65,6 +65,7 @@ func GetOriginalToolName(safeName string) string {
 	}
 	return safeName
 }
+
 // RenameGrokToolCalls renames tool calls in messages to Grok's expected names.
 func RenameGrokToolCalls(messages []Message) []Message {
 	// Logic to map original name -> Grok name

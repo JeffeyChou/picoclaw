@@ -26,11 +26,11 @@ import (
 
 type TelegramChannel struct {
 	*BaseChannel
-	bot          *telego.Bot
-	commands     TelegramCommander
-	config       *config.Config
-	chatIDs      map[string]int64
-	transcriber  *voice.GroqTranscriber
+	bot            *telego.Bot
+	commands       TelegramCommander
+	config         *config.Config
+	chatIDs        map[string]int64
+	transcriber    *voice.GroqTranscriber
 	placeholders   sync.Map // chatID -> messageID
 	stopThinking   sync.Map // chatID -> thinkingCancel
 	lastMessageMap sync.Map // chatID -> messageID

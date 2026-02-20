@@ -126,7 +126,7 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		if m.ReasoningContent != "" {
 			msgMap["reasoning_content"] = m.ReasoningContent
 		}
-		
+
 		payloadMessages = append(payloadMessages, msgMap)
 	}
 
@@ -159,11 +159,13 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 		}
 	}
 
+	requestBody["stream"] = true
+
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-	
+
 	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -184,7 +186,7 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []Message, tools []Too
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("API request failed:\n  Status: %d\n  Body:   %s", resp.StatusCode, string(body))
 	}
@@ -211,27 +213,27 @@ func fetchAndEncodeImage(ctx context.Context, client *http.Client, urlStr string
 		return "", err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("bad status: %d", resp.StatusCode)
 	}
-	
+
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-	
+
 	mimeType := resp.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = "image/jpeg"
 	}
-	
+
 	encoded := base64.StdEncoding.EncodeToString(data)
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded), nil
 }
@@ -267,17 +269,17 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 		lines := bytes.Split(body, []byte("\n"))
 		contentBuilder := strings.Builder{}
 		reasoningBuilder := strings.Builder{}
-		
+
 		for _, line := range lines {
 			line = bytes.TrimSpace(line)
 			if len(line) == 0 {
 				continue
 			}
-			
+
 			if bytes.HasPrefix(line, []byte("data: ")) {
 				line = bytes.TrimPrefix(line, []byte("data: "))
 			}
-			
+
 			if string(line) == "[DONE]" {
 				continue
 			}
@@ -289,6 +291,15 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 						Content          string `json:"content"`
 						ReasoningContent string `json:"reasoning_content"`
 						Thinking         string `json:"thinking"`
+						ToolCalls        []struct {
+							Index    int    `json:"index"`
+							ID       string `json:"id"`
+							Type     string `json:"type"`
+							Function *struct {
+								Name      string `json:"name"`
+								Arguments string `json:"arguments"`
+							} `json:"function"`
+						} `json:"tool_calls"`
 					} `json:"delta"`
 					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
@@ -305,13 +316,54 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 						c.FinishReason = streamChunk.Choices[0].FinishReason
 						fullResp.Choices = append(fullResp.Choices, c)
 					}
+
+					// Pre-allocate or access choices[0] message tool calls
+					if len(fullResp.Choices) == 0 {
+						fullResp.Choices = make([]choice, 1)
+					}
+
+					for _, tcDelta := range streamChunk.Choices[0].Delta.ToolCalls {
+						// Ensure the tool_calls slice is large enough
+						for len(fullResp.Choices[0].Message.ToolCalls) <= tcDelta.Index {
+							fullResp.Choices[0].Message.ToolCalls = append(fullResp.Choices[0].Message.ToolCalls, struct {
+								ID       string "json:\"id\""
+								Type     string "json:\"type\""
+								Function *struct {
+									Name      string "json:\"name\""
+									Arguments string "json:\"arguments\""
+								} "json:\"function\""
+							}{})
+						}
+
+						if tcDelta.ID != "" {
+							fullResp.Choices[0].Message.ToolCalls[tcDelta.Index].ID = tcDelta.ID
+						}
+						if tcDelta.Type != "" {
+							fullResp.Choices[0].Message.ToolCalls[tcDelta.Index].Type = tcDelta.Type
+						}
+
+						if tcDelta.Function != nil {
+							if fullResp.Choices[0].Message.ToolCalls[tcDelta.Index].Function == nil {
+								fullResp.Choices[0].Message.ToolCalls[tcDelta.Index].Function = &struct {
+									Name      string "json:\"name\""
+									Arguments string "json:\"arguments\""
+								}{}
+							}
+							if tcDelta.Function.Name != "" {
+								fullResp.Choices[0].Message.ToolCalls[tcDelta.Index].Function.Name += tcDelta.Function.Name
+							}
+							if tcDelta.Function.Arguments != "" {
+								fullResp.Choices[0].Message.ToolCalls[tcDelta.Index].Function.Arguments += tcDelta.Function.Arguments
+							}
+						}
+					}
 				}
 				if streamChunk.Usage != nil {
 					fullResp.Usage = streamChunk.Usage
 				}
 			}
 		}
-		
+
 		// Synthesize a full response from aggregated chunks
 		if contentBuilder.Len() > 0 || reasoningBuilder.Len() > 0 {
 			if len(fullResp.Choices) == 0 {
@@ -320,8 +372,8 @@ func (p *HTTPProvider) parseResponse(body []byte) (*LLMResponse, error) {
 			fullResp.Choices[0].Message.Content = contentBuilder.String()
 			fullResp.Choices[0].Message.ReasoningContent = reasoningBuilder.String()
 		} else if len(fullResp.Choices) == 0 && fullResp.Usage == nil {
-             return nil, fmt.Errorf("failed to parse response as JSON or Stream: %s", string(body))
-        }
+			return nil, fmt.Errorf("failed to parse response as JSON or Stream: %s", string(body))
+		}
 	}
 
 	if len(fullResp.Choices) == 0 {

@@ -31,32 +31,32 @@ import (
 )
 
 type AgentLoop struct {
-	bus            *bus.MessageBus
-	provider       providers.LLMProvider
-	workspace      string
-	model          string
-	contextWindow  int // Maximum context window size in tokens
-	maxIterations  int
-	sessions       *session.SessionManager
-	state          *state.Manager
-	contextBuilder *ContextBuilder
-	tools          *tools.ToolRegistry
-	running        atomic.Bool
-	summarizing    sync.Map // Tracks which sessions are currently being summarized
-	channelManager *channels.Manager
+	bus                *bus.MessageBus
+	provider           providers.LLMProvider
+	workspace          string
+	model              string
+	contextWindow      int // Maximum context window size in tokens
+	maxIterations      int
+	sessions           *session.SessionManager
+	state              *state.Manager
+	contextBuilder     *ContextBuilder
+	tools              *tools.ToolRegistry
+	running            atomic.Bool
+	summarizing        sync.Map // Tracks which sessions are currently being summarized
+	channelManager     *channels.Manager
 	maxHistoryMessages int
 }
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey      string // Session identifier for history/context
-	Channel         string // Target channel for tool execution
-	ChatID          string // Target chat ID for tool execution
-	UserMessage     string // User message content (may include prefix)
-	DefaultResponse string // Response when LLM returns empty
-	EnableSummary   bool   // Whether to trigger summarization
-	SendResponse    bool   // Whether to send response via bus
-	NoHistory       bool   // If true, don't load session history (for heartbeat)
+	SessionKey      string   // Session identifier for history/context
+	Channel         string   // Target channel for tool execution
+	ChatID          string   // Target chat ID for tool execution
+	UserMessage     string   // User message content (may include prefix)
+	DefaultResponse string   // Response when LLM returns empty
+	EnableSummary   bool     // Whether to trigger summarization
+	SendResponse    bool     // Whether to send response via bus
+	NoHistory       bool     // If true, don't load session history (for heartbeat)
 	Media           []string // Media paths/URLs attached to the message
 }
 
@@ -104,7 +104,7 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 		return nil
 	})
 	registry.Register(messageTool)
-	
+
 	registry.Register(tools.NewReactionTool())
 
 	return registry
@@ -157,10 +157,10 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		maxIterations:      cfg.Agents.Defaults.MaxToolIterations,
 		maxHistoryMessages: maxHistoryMessages,
 		sessions:           sessionsManager,
-		state:          stateManager,
-		contextBuilder: contextBuilder,
-		tools:          toolsRegistry,
-		summarizing:    sync.Map{},
+		state:              stateManager,
+		contextBuilder:     contextBuilder,
+		tools:              toolsRegistry,
+		summarizing:        sync.Map{},
 	}
 }
 
@@ -216,7 +216,7 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
-	
+
 	// Inject channel manager into tools that need it
 	if tool, ok := al.tools.Get("reaction"); ok {
 		if rt, ok := tool.(*tools.ReactionTool); ok {
@@ -383,15 +383,15 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	if !opts.NoHistory {
 		history = al.sessions.GetHistory(opts.SessionKey)
 		summary = al.sessions.GetSummary(opts.SessionKey)
-		
+
 		// 2.1 Sanitize history before building messages to fix protocol errors (broken tool chains)
 		sm := al.sessions
 		originalLen := len(history)
-		
+
 		// Sanitize the session history using the SessionManager method
 		sm.Sanitize(opts.SessionKey)
 		history = sm.GetHistory(opts.SessionKey)
-		
+
 		if len(history) != originalLen {
 			logger.InfoCF("agent", "Sanitized session history before LLM call", map[string]interface{}{
 				"session": opts.SessionKey,
@@ -650,8 +650,8 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 				map[string]interface{}{
-					"iteration":     iteration,
-					"content_chars": len(finalContent),
+					"iteration":         iteration,
+					"content_chars":     len(finalContent),
 					"prompt_tokens":     usedPrompt,
 					"completion_tokens": usedCompletion,
 					"total_tokens":      usedTotal,
@@ -676,9 +676,9 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 		logger.InfoCF("agent", "LLM requested tool calls",
 			map[string]interface{}{
-				"tools":     toolNames,
-				"count":     len(response.ToolCalls),
-				"iteration": iteration,
+				"tools":             toolNames,
+				"count":             len(response.ToolCalls),
+				"iteration":         iteration,
 				"prompt_tokens":     usedPrompt,
 				"completion_tokens": usedCompletion,
 				"total_tokens":      usedTotal,
@@ -704,10 +704,8 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		}
 		messages = append(messages, assistantMsg)
 
-		// Save assistant message with tool calls to session
-		al.sessions.AddFullMessage(opts.SessionKey, assistantMsg)
-
 		// Execute tool calls
+		var toolExecSummary strings.Builder
 		for _, tc := range response.ToolCalls {
 			// Log tool call with arguments preview
 			argsJSON, _ := json.Marshal(tc.Arguments)
@@ -765,7 +763,28 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			messages = append(messages, toolResultMsg)
 
 			// Save tool result message to session
-			al.sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
+			// al.sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
+
+			toolExecSummary.WriteString(fmt.Sprintf("Tool: %s, Args: %s\nResult: %s\n\n", tc.Name, string(argsJSON), utils.Truncate(contentForLLM, 1500)))
+		}
+
+		// Summarize tool calls and append to session context synchronously
+		if len(response.ToolCalls) > 0 {
+			summaryPrompt := fmt.Sprintf("Summarize the following tool executions and their outcomes concisely in 1-2 sentences. Format as a pure statement of what was accomplished:\n\n%s", toolExecSummary.String())
+			summarizerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+			resp, err := al.provider.Chat(summarizerCtx, []providers.Message{{Role: "user", Content: summaryPrompt}}, nil, al.model, map[string]interface{}{
+				"max_tokens":  200,
+				"temperature": 0.3,
+			})
+			cancel()
+
+			if err == nil && resp != nil && resp.Content != "" {
+				al.sessions.AddFullMessage(opts.SessionKey, providers.Message{
+					Role:    "assistant",
+					Content: "*(Tool execution summary: " + strings.TrimSpace(resp.Content) + ")*",
+				})
+			}
 		}
 	}
 
@@ -809,9 +828,14 @@ func (al *AgentLoop) updateToolContexts(channel, chatID string) {
 func (al *AgentLoop) maybeSummarize(sessionKey, channel, chatID string) {
 	newHistory := al.sessions.GetHistory(sessionKey)
 	tokenEstimate := al.estimateTokens(newHistory)
-	threshold := al.contextWindow * 75 / 100
+	// Lower thresholds to be more aggressive
+	threshold := al.contextWindow * 50 / 100
+	maxMsgs := al.maxHistoryMessages
+	if maxMsgs > 40 {
+		maxMsgs = 40 // Hard limit for aggressive pruning
+	}
 
-	if len(newHistory) > al.maxHistoryMessages || tokenEstimate > threshold {
+	if len(newHistory) > maxMsgs || tokenEstimate > threshold {
 		if _, loading := al.summarizing.LoadOrStore(sessionKey, true); !loading {
 			go func() {
 				defer al.summarizing.Delete(sessionKey)
@@ -820,7 +844,7 @@ func (al *AgentLoop) maybeSummarize(sessionKey, channel, chatID string) {
 					al.bus.PublishOutbound(bus.OutboundMessage{
 						Channel: channel,
 						ChatID:  chatID,
-						Content: "⚠️ Memory threshold reached. Optimizing conversation history...",
+						Content: "⚠️ Memory threshold reached. Optimizing conversation history and logging to core memory...",
 					})
 				}
 				al.summarizeSession(sessionKey)
@@ -854,7 +878,7 @@ func (al *AgentLoop) forceCompression(sessionKey string) {
 	for safeMid < len(conversation) && conversation[safeMid].Role != "user" {
 		safeMid++
 	}
-	
+
 	// If no user message found after mid, try looking before mid
 	if safeMid == len(conversation) {
 		safeMid = mid
@@ -862,7 +886,7 @@ func (al *AgentLoop) forceCompression(sessionKey string) {
 			safeMid--
 		}
 	}
-	
+
 	if conversation[safeMid].Role == "user" {
 		mid = safeMid
 	}
@@ -1042,6 +1066,21 @@ func (al *AgentLoop) summarizeSession(sessionKey string) {
 		al.sessions.SetSummary(sessionKey, finalSummary)
 		al.sessions.TruncateHistory(sessionKey, 4)
 		al.sessions.Save(sessionKey)
+
+		// Append to MEMORY.md
+		memoryPath := filepath.Join(al.workspace, "memory", "MEMORY.md")
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+
+		// Format the entry
+		entry := fmt.Sprintf("\n## Session Cleanup: %s\n- **Date**: %s\n- **Content**:\n%s\n", sessionKey, timestamp, finalSummary)
+
+		f, err := os.OpenFile(memoryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err == nil {
+			f.WriteString(entry)
+			f.Close()
+		} else {
+			logger.WarnCF("agent", "Failed to write to MEMORY.md", map[string]interface{}{"error": err.Error()})
+		}
 	}
 }
 

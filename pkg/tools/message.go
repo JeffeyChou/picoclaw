@@ -80,7 +80,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
 	replyToID, _ := args["reply_to_id"].(string)
-	
+
 	var mentionUsers []string
 	if mentions, ok := args["mention_users"].([]interface{}); ok {
 		for _, m := range mentions {

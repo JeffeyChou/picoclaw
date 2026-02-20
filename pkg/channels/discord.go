@@ -24,13 +24,13 @@ const (
 
 type DiscordChannel struct {
 	*BaseChannel
-	session     *discordgo.Session
-	config      config.DiscordConfig
-	transcriber *voice.GroqTranscriber
-	ctx         context.Context
-	typingMap   sync.Map // Stores cancel functions for typing loops: map[channelID]context.CancelFunc
+	session        *discordgo.Session
+	config         config.DiscordConfig
+	transcriber    *voice.GroqTranscriber
+	ctx            context.Context
+	typingMap      sync.Map // Stores cancel functions for typing loops: map[channelID]context.CancelFunc
 	lastMessageMap sync.Map // Stores last user message ID for reaction: map[channelID]string
-	buffers     sync.Map // Stores channel buffers: map[channelID]*DiscordChannelBuffer
+	buffers        sync.Map // Stores channel buffers: map[channelID]*DiscordChannelBuffer
 }
 
 func NewDiscordChannel(cfg config.DiscordConfig, bus *bus.MessageBus) (*DiscordChannel, error) {
@@ -204,7 +204,7 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) erro
 				targetID = "" // No last message to reply to
 			}
 		}
-		
+
 		if targetID != "" {
 			replyReference = &discordgo.MessageReference{
 				MessageID: targetID,
@@ -220,7 +220,7 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) erro
 		if i == 0 {
 			ref = replyReference
 		}
-		
+
 		if err := c.sendChunk(ctx, channelID, chunk, ref); err != nil {
 			return err
 		}
@@ -425,8 +425,6 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		return
 	}
 
-
-
 	// Check whitelist for channel ID
 	if !c.IsChannelAllowed(m.ChannelID) {
 		logger.DebugCF("discord", "Message rejected (channel not in whitelist)", map[string]any{
@@ -515,7 +513,7 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 				localPath := c.downloadAttachment(attachment.URL, attachment.Filename)
 				if localPath != "" {
 					localFiles = append(localFiles, localPath)
-					cmd := exec.Command("python3", "scripts/pdf_parser.py", localPath)
+					cmd := exec.Command("python3", "/home/ubuntu/.picoclaw/workspace/scripts/pdf_parser.py", localPath)
 					output, err := cmd.CombinedOutput()
 					if err == nil {
 						text := string(output)
@@ -525,7 +523,7 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 						content = appendContent(content, fmt.Sprintf("[PDF attachment (%s)]:\n%s", attachment.Filename, strings.TrimSpace(text)))
 					} else {
 						logger.WarnCF("discord", "Failed to parse pdf attachment", map[string]any{
-							"error": err.Error(),
+							"error":  err.Error(),
 							"output": string(output),
 						})
 						content = appendContent(content, fmt.Sprintf("[file attachment (%s): %s]", attachment.Filename, attachment.URL))
@@ -560,7 +558,7 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	// 1. React with emoji
 	// Only react in DMs (GuildID == "") or specific private channel
 	isPrivateChannel := m.GuildID == "" || m.ChannelID == "1465457312066961554"
-	
+
 	if isPrivateChannel {
 		go func() {
 			if err := s.MessageReactionAdd(m.ChannelID, m.ID, "👀"); err != nil {
@@ -752,7 +750,7 @@ func (c *DiscordChannel) handleInteraction(s *discordgo.Session, i *discordgo.In
 				Content: "🔄 Restarting picoclaw service... Please wait.",
 			},
 		})
-		
+
 		if err != nil {
 			logger.ErrorCF("discord", "Failed to respond to restart interaction", map[string]any{"error": err.Error()})
 		}
@@ -791,12 +789,12 @@ func (c *DiscordChannel) handleInteraction(s *discordgo.Session, i *discordgo.In
 			logText = logText[len(logText)-1850:] // Keep the last 1850 chars
 			logText = "... " + logText
 		}
-		
+
 		emoji := "🟢"
 		if serviceStatus != "active" {
 			emoji = "🔴"
 		}
-		
+
 		content = fmt.Sprintf("Service Status: %s **%s**\n\nLast 30 lines of logs:\n```\n%s\n```", emoji, serviceStatus, logText)
 	}
 

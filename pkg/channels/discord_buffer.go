@@ -22,10 +22,10 @@ type BufferedMessage struct {
 }
 
 type DiscordChannelBuffer struct {
-	channelID   string
-	messages    []BufferedMessage
-	mutex       sync.Mutex
-	parent      *DiscordChannel
+	channelID    string
+	messages     []BufferedMessage
+	mutex        sync.Mutex
+	parent       *DiscordChannel
 	keywordTimer *time.Timer
 }
 
@@ -49,7 +49,7 @@ func (b *DiscordChannelBuffer) AddMessage(m *discordgo.MessageCreate, content st
 	})
 
 	// 2. Check Triggers
-	
+
 	// A. Direct Mention (@Bot) - Immediate
 	if b.isMentioned(m) {
 		logger.DebugCF("discord", "Trigger: Mention", map[string]any{"channel": b.channelID, "user": m.Author.Username})
@@ -72,7 +72,7 @@ func (b *DiscordChannelBuffer) AddMessage(m *discordgo.MessageCreate, content st
 		})
 		return
 	}
-	
+
 	if b.keywordTimer != nil {
 		b.keywordTimer.Stop()
 		b.keywordTimer = time.AfterFunc(keywordWaitTime, func() {
@@ -128,13 +128,13 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 
 	// Construct Aggregated Content
 	var sb strings.Builder
-	
+
 	var aggregatedMedia []string
-	
+
 	// We send ALL currently buffered messages to the LLM for context
 	for _, msg := range b.messages {
 		timestamp := msg.Timestamp.Format("15:04:05")
-		
+
 		content := msg.Content
 		if msg.ReferencedMessage != nil {
 			refAuthor := "Unknown"
@@ -142,6 +142,21 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 				refAuthor = msg.ReferencedMessage.Author.Username
 			}
 			refContent := msg.ReferencedMessage.Content
+			// Check if the referenced content itself contains a reply to someone else
+			replyPrefix := "[Replying to "
+			if strings.Count(refContent, replyPrefix) > 1 {
+				firstIdx := strings.Index(refContent, replyPrefix)
+				secondIdx := strings.Index(refContent[firstIdx+len(replyPrefix):], replyPrefix)
+				if secondIdx != -1 {
+					secondIdx += firstIdx + len(replyPrefix)
+					closeIdx := strings.Index(refContent[secondIdx:], "] ")
+					if closeIdx != -1 {
+						closeIdx += secondIdx
+						refContent = refContent[:secondIdx] + "[引用内容已省略] " + refContent[closeIdx+2:]
+					}
+				}
+			}
+
 			if len(refContent) > 50 {
 				refContent = refContent[:47] + "..."
 			}
@@ -150,7 +165,7 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 
 		// Format: [Time] User: Content
 		sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", timestamp, msg.Author.Username, content))
-		
+
 		if len(msg.Media) > 0 {
 			aggregatedMedia = append(aggregatedMedia, msg.Media...)
 		}
@@ -163,22 +178,20 @@ func (b *DiscordChannelBuffer) triggerFunction(priority bool) {
 
 	// Use the LAST message's metadata for the "Trigger" event
 	lastMsg := b.messages[len(b.messages)-1]
-	
+
 	metadata := map[string]string{
-		"message_id":   lastMsg.ID,
-		"user_id":      lastMsg.Author.ID,
-		"username":     lastMsg.Author.Username,
-		"channel_id":   b.channelID,
-		"guild_id":     lastMsg.GuildID,
+		"message_id":    lastMsg.ID,
+		"user_id":       lastMsg.Author.ID,
+		"username":      lastMsg.Author.Username,
+		"channel_id":    b.channelID,
+		"guild_id":      lastMsg.GuildID,
 		"is_aggregated": "true",
-		"priority":     fmt.Sprintf("%t", priority),
+		"priority":      fmt.Sprintf("%t", priority),
 	}
-
-
 
 	// Call Parent
 	b.parent.HandleMessage(lastMsg.Author.ID, b.channelID, finalContent, aggregatedMedia, metadata)
-	
+
 	// Prune buffer completely to avoid duplicates
 	b.Prune(len(b.messages))
 }

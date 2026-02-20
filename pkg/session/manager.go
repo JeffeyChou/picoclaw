@@ -279,19 +279,19 @@ func (sm *SessionManager) sanitizeMessages(s *Session) {
 	}
 
 	var sanitized []providers.Message
-	
+
 	// 1. Remove any leading tool or system messages that might confuse the provider
 	// Some providers require history to start with user or assistant (or at least not tool)
 	startIdx := 0
 	for startIdx < len(s.Messages) && s.Messages[startIdx].Role == "tool" {
 		startIdx++
 	}
-	
+
 	messages := s.Messages[startIdx:]
-	
+
 	for i := 0; i < len(messages); i++ {
 		msg := messages[i]
-		
+
 		// 2. Validate tool results have a preceding assistant message
 		if msg.Role == "tool" {
 			found := false
@@ -347,13 +347,13 @@ func (sm *SessionManager) sanitizeMessages(s *Session) {
 					})
 				}
 			}
-			
+
 			// If we found tool messages ahead, skip them in the main loop to avoid duplication
 			// because we'll add them when the loop reaches them, OR we can add them now.
 			// The simplest is to let the loop continue and add them naturally.
 		}
 	}
-	
+
 	s.Messages = sanitized
 }
 
@@ -361,7 +361,7 @@ func (sm *SessionManager) sanitizeMessages(s *Session) {
 func (sm *SessionManager) Sanitize(key string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	if session, ok := sm.sessions[key]; ok {
 		sm.sanitizeMessages(session)
 	}

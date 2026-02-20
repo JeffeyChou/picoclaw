@@ -15,13 +15,13 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 	// Setup
 	msgBus := bus.NewMessageBus()
 	cfg := config.DiscordConfig{Token: "test", AllowFrom: []string{"user1"}}
-	
+
 	// Mock session state
 	session, _ := discordgo.New("Bot test")
 	session.State.User = &discordgo.User{
 		ID: "bot_id",
 	}
-	
+
 	// Create base channel manually to avoid Discord connection
 	base := NewBaseChannel("discord", cfg, msgBus, cfg.AllowFrom)
 	channel := &DiscordChannel{
@@ -36,14 +36,14 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 	// Override params for test
 	bufferTriggerCount = 5
 	keywordWaitTime = 100 * time.Millisecond
-	
+
 	buffer := NewDiscordChannelBuffer("channel1", channel)
 
 	t.Run("Mention Trigger", func(t *testing.T) {
 		// Prepare listener
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		
+
 		received := make(chan bus.InboundMessage, 1)
 		go func() {
 			msg, ok := msgBus.ConsumeInbound(ctx)
@@ -82,7 +82,7 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 	t.Run("Keyword Trigger", func(t *testing.T) {
 		// Reset buffer
 		buffer.messages = make([]BufferedMessage, 0)
-		
+
 		received := make(chan bus.InboundMessage, 1)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -136,7 +136,7 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 	t.Run("Passive Trigger", func(t *testing.T) {
 		// Reset buffer
 		buffer.messages = make([]BufferedMessage, 0)
-		
+
 		received := make(chan bus.InboundMessage, 1)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -184,11 +184,11 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 			t.Fatal("Timeout waiting for passive trigger")
 		}
 	})
-	
+
 	t.Run("Keyword Reset", func(t *testing.T) {
 		// Send keyword -> Start Timer
 		// Send normal -> Reset Timer
-		
+
 		// Reset buffer
 		buffer.messages = make([]BufferedMessage, 0)
 		buffer.keywordTimer = nil
@@ -216,23 +216,23 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 			Message: &discordgo.Message{Author: &discordgo.User{ID: "user1", Username: "U1"}, Content: "pipi", Timestamp: time.Now()},
 		}
 		buffer.AddMessage(m1, "pipi", nil)
-		
+
 		// Wait 50ms (half of 100ms timeout)
 		time.Sleep(50 * time.Millisecond)
-		
+
 		// 2. Send Normal Message
 		m2 := &discordgo.MessageCreate{
 			Message: &discordgo.Message{Author: &discordgo.User{ID: "user1", Username: "U1"}, Content: "normal", Timestamp: time.Now()},
 		}
 		buffer.AddMessage(m2, "normal", nil)
-		
-		// Timer should reset to another 100ms. 
+
+		// Timer should reset to another 100ms.
 		// Original timer would fire at T+100ms.
 		// New timer fires at T+50ms+100ms = T+150ms.
-		
+
 		// If we wait another 150ms (Total ~200ms), original timer would have fired.
 		// But since reset, it shouldn't fire yet.
-		
+
 		select {
 		case <-received:
 			t.Fatal("Timer did not reset!")
@@ -240,7 +240,7 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 			// Good, verify it fires later
 			t.Log("Timer correctly did not fire early")
 		}
-		
+
 		select {
 		case <-received:
 			// Good
@@ -254,7 +254,7 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 	t.Run("Reply Content", func(t *testing.T) {
 		// Reset buffer
 		buffer.messages = make([]BufferedMessage, 0)
-		
+
 		received := make(chan bus.InboundMessage, 1)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -275,19 +275,19 @@ func TestDiscordBuffer_Triggers(t *testing.T) {
 
 		// Message with Reply
 		refMsg := &discordgo.Message{
-			Author: &discordgo.User{Username: "OriginalUser"},
+			Author:  &discordgo.User{Username: "OriginalUser"},
 			Content: "This is the original message",
 		}
 		m := &discordgo.MessageCreate{
 			Message: &discordgo.Message{
-				ID:        "msg_reply",
-				ChannelID: "channel1",
-				GuildID:   "guild1",
-				Author:    &discordgo.User{ID: "user1", Username: "User1"},
-				Content:   "I agree @Bot",
-				Mentions:  []*discordgo.User{{ID: "bot_id"}}, // Trigger immediately
+				ID:                "msg_reply",
+				ChannelID:         "channel1",
+				GuildID:           "guild1",
+				Author:            &discordgo.User{ID: "user1", Username: "User1"},
+				Content:           "I agree @Bot",
+				Mentions:          []*discordgo.User{{ID: "bot_id"}}, // Trigger immediately
 				ReferencedMessage: refMsg,
-				Timestamp: time.Now(),
+				Timestamp:         time.Now(),
 			},
 		}
 		buffer.AddMessage(m, "I agree @Bot", nil)

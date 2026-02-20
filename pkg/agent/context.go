@@ -103,7 +103,7 @@ func (cb *ContextBuilder) buildToolsSection() string {
 
 	// If Grok model, use renamed tools
 	isGrok := providers.IsGrokModel(cb.model)
-	
+
 	if isGrok {
 		// Use provider defs to get descriptions, but apply renaming
 		defs := cb.tools.ToProviderDefs()
@@ -257,7 +257,7 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 	// 2. Process history messages
 	for i := 0; i < len(history); i++ {
 		msg := history[i]
-		
+
 		// Filter empty non-tool messages
 		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 && msg.ReasoningContent == "" {
 			continue
@@ -267,9 +267,9 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 && strings.TrimSpace(msg.Content) == "" && msg.ReasoningContent == "" {
 			msg.Content = "(thinking...)"
 		}
-		
+
 		messages = append(messages, msg)
-		
+
 		// 3. If this is an assistant message with tool calls, verify/inject results if missing
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
@@ -287,7 +287,7 @@ func (cb *ContextBuilder) BuildMessages(history []providers.Message, summary str
 						break
 					}
 				}
-				
+
 				if !found {
 					// Inject synthetic result to keep context valid for strict APIs
 					messages = append(messages, providers.Message{

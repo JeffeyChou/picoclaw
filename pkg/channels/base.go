@@ -19,9 +19,9 @@ type Channel interface {
 }
 
 type BaseChannel struct {
-	config    interface{}
-	bus       *bus.MessageBus
-	running   bool
+	config          interface{}
+	bus             *bus.MessageBus
+	running         bool
 	name            string
 	allowList       []string
 	allowedChannels []string
@@ -29,8 +29,8 @@ type BaseChannel struct {
 
 func NewBaseChannel(name string, config interface{}, bus *bus.MessageBus, allowList []string) *BaseChannel {
 	return &BaseChannel{
-		config:    config,
-		bus:       bus,
+		config:          config,
+		bus:             bus,
 		name:            name,
 		allowList:       allowList,
 		allowedChannels: []string{},
